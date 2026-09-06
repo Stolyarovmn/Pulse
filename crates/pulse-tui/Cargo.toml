@@ -1,0 +1,22 @@
+[package]
+name = "pulse-tui"
+description = "Pulse terminal interface: problem-first diagnosis UI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pulse-core = { workspace = true }
+pulse-store = { workspace = true }
+pulse-engine = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+signal-hook = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+
+[lints]
+workspace = true

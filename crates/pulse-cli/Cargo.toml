@@ -1,0 +1,31 @@
+[package]
+name = "pulse-cli"
+description = "Pulse binary: local-first observability node with a diagnostic TUI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "pulse"
+path = "src/main.rs"
+
+[dependencies]
+pulse-core = { workspace = true }
+pulse-collect = { workspace = true }
+pulse-store = { workspace = true }
+pulse-engine = { workspace = true }
+pulse-export = { workspace = true }
+pulse-tui = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+arc-swap = { workspace = true }
+signal-hook = { workspace = true }
+rustix = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

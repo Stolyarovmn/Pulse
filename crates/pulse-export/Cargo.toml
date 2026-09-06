@@ -1,0 +1,10 @@
+[package]
+name = "pulse-export"
+version.workspace = true
+edition.workspace = true
+description = "HTTP-экспорт метрик Pulse в OpenMetrics с аутентификацией и лимитами"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pulse-core = { path = "../pulse-core" }

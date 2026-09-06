@@ -1,0 +1,18 @@
+[package]
+name = "pulse-engine"
+description = "Pulse diagnosis: deterministic problem rules and semantic A/B diff"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pulse-core = { workspace = true }
+pulse-store = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+
+[lints]
+workspace = true

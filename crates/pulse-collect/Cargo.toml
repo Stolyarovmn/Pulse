@@ -1,0 +1,19 @@
+[package]
+name = "pulse-collect"
+description = "Pulse Linux collectors: procfs, sysfs, cgroup v2, PSI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pulse-core = { workspace = true }
+rustix = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+
+[lints]
+workspace = true

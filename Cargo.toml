@@ -1,0 +1,65 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pulse-core",
+    "crates/pulse-collect",
+    "crates/pulse-store",
+    "crates/pulse-engine",
+    "crates/pulse-export",
+    "crates/pulse-tui",
+    "crates/pulse-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/pulse-observability/pulse"
+authors = ["Pulse contributors"]
+
+[workspace.dependencies]
+pulse-core = { path = "crates/pulse-core" }
+pulse-collect = { path = "crates/pulse-collect" }
+pulse-store = { path = "crates/pulse-store" }
+pulse-engine = { path = "crates/pulse-engine" }
+pulse-export = { path = "crates/pulse-export" }
+pulse-tui = { path = "crates/pulse-tui" }
+
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+thiserror = "1"
+ratatui = "0.29"
+crossterm = "0.28"
+clap = { version = "4", features = ["derive"] }
+tiny_http = "0.12"
+libc = "0.2"
+rustix = { version = "0.38", features = ["fs", "process", "param", "system", "pty", "termios"] }
+arc-swap = "1"
+signal-hook = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+indexing_slicing = "warn"
+integer_division = "allow"
+cast_precision_loss = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+[profile.dev]
+debug = 1

@@ -1,0 +1,33 @@
+/target/
+/dist/
+**/*.rs.bk
+*.pdb
+*.profraw
+*.log
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+pulse.toml
+
+# Рабочие материалы, не относящиеся к сборке: черновики, транскрипты диалогов,
+# исследовательские отчёты и служебные каталоги инструментов.
+/tmp/
+/.understand-anything/
+/.omp/
+SESSION-REVIEW.md
+deep-research-report*.md
+pulse_observability_dialog_export.md
+pulse_corrective_prompt_v0.9.md
+pulse_tui_concepts.png
+
+# Спецификация append-only: в репозитории живёт только нормативная версия,
+# на которую ссылается документация. Ранние версии — история черновиков.
+pulse_tui_visual_navigation_spec_v0.1.md
+pulse_tui_visual_navigation_spec_v0.5.md
+pulse_tui_visual_navigation_spec_v0.7.md
+pulse_tui_visual_navigation_spec_v0.8.md
+IDEAS.md
