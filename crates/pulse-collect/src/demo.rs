@@ -53,8 +53,12 @@ pub struct DemoFs {
     started: Instant,
     /// Длительность одного такта сценария.
     step: Duration,
-    /// Текущий такт и собранное для него дерево.
+    /// Смещение начала сценария в тактах.
     ///
+    /// Демо начинается не с нуля: первые такты покоя дают ровную линию,
+    /// и оператор успевает решить, что кадр мёртвый, до начала деградации.
+    /// Стартуем за несколько тактов до неё — первый же кадр уже движется.
+    offset: u64,
     /// Дерево пересобирается только при смене такта: коллекторы делают
     /// десятки чтений за такт, и пересборка на каждое чтение сделала бы
     /// демо дороже реального сбора.
@@ -71,11 +75,13 @@ impl DemoFs {
     #[must_use]
     pub fn new(step: Duration) -> Self {
         let step = step.max(Duration::from_millis(50));
+        let offset = DEGRADE_FROM.saturating_sub(5);
         DemoFs {
             started: Instant::now(),
             step,
-            scene: Mutex::new((0, scene(0))),
+            scene: Mutex::new((offset, scene(offset))),
             frozen: None,
+            offset,
         }
     }
 
@@ -87,6 +93,7 @@ impl DemoFs {
             step: Duration::from_millis(1_000),
             scene: Mutex::new((tick, scene(tick))),
             frozen: Some(tick),
+            offset: 0,
         }
     }
 
@@ -98,7 +105,8 @@ impl DemoFs {
         }
         let elapsed = self.started.elapsed().as_millis();
         let step = self.step.as_millis().max(1);
-        u64::try_from(elapsed / step).unwrap_or(u64::MAX)
+        self.offset
+            .saturating_add(u64::try_from(elapsed / step).unwrap_or(u64::MAX))
     }
 
     /// Человеческое имя текущей фазы: интерфейс называет его оператору.
@@ -533,13 +541,22 @@ mod tests {
         }
     }
 
-    /// Фаза называется человеческим словом: интерфейс обязан показать
-    /// оператору, что именно он сейчас видит.
+    /// Демо начинается у порога деградации, а не с нуля.
+    ///
+    /// Дефект восприятия с живого прогона: тридцать тактов покоя в начале
+    /// давали ровную линию, и кадр выглядел мёртвым до первого срабатывания
+    /// правила. Фаза при этом обязана называться человеческим словом:
+    /// оператор должен видеть, что именно он сейчас наблюдает.
     #[test]
-    fn phase_is_named_for_the_operator() {
+    fn demo_starts_just_before_degradation() {
         let demo = DemoFs::new(Duration::from_secs(3_600));
+        assert_eq!(demo.tick(), DEGRADE_FROM - 5, "старт у порога деградации");
         assert_eq!(demo.phase(), "покой");
-        assert_eq!(demo.tick(), 0);
+
+        let degrading = DemoFs::at_tick(DEGRADE_FROM + 10);
+        assert_eq!(degrading.phase(), "деградация api.service");
+        let recovering = DemoFs::at_tick(RECOVER_FROM + 10);
+        assert_eq!(recovering.phase(), "восстановление");
     }
 
     fn read_text(scene: &FixtureFs, path: &str) -> String {

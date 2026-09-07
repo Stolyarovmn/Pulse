@@ -111,6 +111,14 @@ pub(crate) struct StoryRow {
     at: Timestamp,
     last_at: Timestamp,
     kind: EventKind,
+    /// Серьёзность самого события.
+    ///
+    /// Вид события её не задаёт: `problem_opened` бывает и предупреждением,
+    /// и критикой. Без этого поля ось времени рисовала любую открытую
+    /// проблему как предупреждение, и критическая на шкале не отличалась
+    /// от обычной — ровно это и заметно на кадре, где в State River стоит
+    /// красный треугольник, а на оси только ромбы.
+    severity: pulse_core::problem::Severity,
     name: String,
     detail: String,
     /// Сколько сырых наблюдений свёрнуто; 1 — одиночное событие.
@@ -123,6 +131,7 @@ impl StoryRow {
             at: event.at,
             last_at: event.at,
             kind: event.kind,
+            severity: event.severity,
             name: event.entity_name.clone(),
             detail: event.detail.clone(),
             count: 1,
@@ -134,6 +143,7 @@ impl StoryRow {
             at: event.at,
             last_at: event.last_at,
             kind: event.kind,
+            severity: event.severity,
             name: event.entity_name.clone(),
             detail: event.detail.clone(),
             count: event.count,
@@ -173,8 +183,16 @@ fn rail_marks(story: &[StoryRow], start: Timestamp, end: Timestamp, width: usize
     let span = end.as_millis().saturating_sub(start.as_millis()).max(1);
     let mut marks: Vec<RailMark> = Vec::new();
     for row in story {
-        let Some(class) = state_transition(row.kind) else {
+        // Вид события решает, попадает ли оно на ось (переход состояния),
+        // а серьёзность — каким символом. Иначе критическая проблема
+        // выглядела бы на шкале обычным предупреждением.
+        let Some(baseline) = state_transition(row.kind) else {
             continue;
+        };
+        let class = if matches!(baseline, StateClass::Normal) {
+            baseline
+        } else {
+            StateClass::from_severity(row.severity).max(baseline)
         };
         if row.at.as_millis() < start.as_millis() {
             continue;
@@ -628,20 +646,57 @@ fn event_marker(kind: EventKind, capability: Capability) -> char {
 }
 
 #[cfg(test)]
-mod tests {
+mod rail_tests {
     use super::*;
 
     fn row(kind: EventKind, at_ms: u64) -> StoryRow {
+        row_with(kind, at_ms, pulse_core::problem::Severity::Warn)
+    }
+
+    fn row_with(kind: EventKind, at_ms: u64, severity: pulse_core::problem::Severity) -> StoryRow {
         StoryRow {
             at: Timestamp::from_millis(at_ms),
             last_at: Timestamp::from_millis(at_ms),
             kind,
+            severity,
             name: "demo-host".to_string(),
             detail: String::new(),
             count: 1,
         }
     }
 
+    /// Критическая проблема обязана отличаться на оси от предупреждения.
+    ///
+    /// Дефект с живого кадра: в State River стоял красный треугольник,
+    /// а на оси только ромбы — вид события задавал символ вместо
+    /// серьёзности, и критика выглядела обычным предупреждением.
+    #[test]
+    fn critical_problem_is_marked_as_critical() {
+        let marks = rail_marks(
+            &[row_with(
+                EventKind::ProblemOpened,
+                50_000,
+                pulse_core::problem::Severity::Crit,
+            )],
+            Timestamp::from_millis(0),
+            Timestamp::from_millis(100_000),
+            40,
+        );
+        assert_eq!(marks.len(), 1);
+        assert_eq!(
+            marks[0].class,
+            StateClass::Critical,
+            "критическая проблема обязана быть отмечена критикой: {marks:?}"
+        );
+
+        let warn = rail_marks(
+            &[row(EventKind::ProblemOpened, 50_000)],
+            Timestamp::from_millis(0),
+            Timestamp::from_millis(100_000),
+            40,
+        );
+        assert_eq!(warn[0].class, StateClass::Warning);
+    }
     /// Отметки обязаны стоять в момент события, а не в начале оси.
     ///
     /// Дефект с живого прогона: ось была прямой линией, по которой нельзя
