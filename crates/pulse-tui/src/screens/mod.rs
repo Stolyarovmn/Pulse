@@ -293,6 +293,17 @@ fn render_header(
     spans.push(Span::raw(" "));
     spans.push(Span::styled(ui::live_mark(theme.capability), live_style));
 
+    // Пометка режима стоит сразу за индикатором наблюдения и не убирается
+    // ни на одном пресете: кадр демо содержит настоящие проблемы настоящих
+    // правил, и спутать его с состоянием своей машины недопустимо.
+    if app.demo {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            " DEMO ",
+            theme.severity(pulse_core::problem::Severity::Warn),
+        ));
+    }
+
     // Счётчик проблем появляется только когда он что-то значит.
     if problems > 0 {
         let class = worst.map_or(crate::state::StateClass::Degraded, |severity| {

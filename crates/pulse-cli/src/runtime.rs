@@ -12,7 +12,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
-use pulse_collect::{boot_id, build_collectors, hostname, FsSource, RealFs};
+use pulse_collect::{boot_id, build_collectors, hostname, FsSource};
 use pulse_core::metric::ids;
 use pulse_core::snapshot::{AgentStats, Snapshot, SnapshotSource};
 use pulse_core::time::Timestamp;
@@ -40,13 +40,16 @@ impl std::fmt::Debug for AgentRuntime {
 }
 
 impl AgentRuntime {
-    /// Запускает поток сбора с реальными procfs/sysfs/cgroupfs.
-    pub fn start(config: &Config) -> io::Result<Self> {
+    /// Запускает поток сбора на заданном источнике файловой системы.
+    ///
+    /// Публичный, потому что детали процесса для пайпа обязаны читаться тем
+    /// же источником, что и коллекторы: иначе в демо-режиме кадр показывал
+    /// бы сценарий, а пайп — реальный хост.
+    pub fn start_with_fs(config: &Config, fs: Arc<dyn FsSource>) -> io::Result<Self> {
         config
             .validate()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
 
-        let fs: Arc<dyn FsSource> = Arc::new(RealFs);
         let boot = boot_id(fs.as_ref(), &config.general.proc_root);
         let host = hostname(fs.as_ref(), &config.general.proc_root);
         let graph = EntityGraph::new(&boot, &host, Timestamp::now());

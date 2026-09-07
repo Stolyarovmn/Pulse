@@ -25,6 +25,7 @@
 pub mod actions;
 pub mod agent;
 pub mod cgroup;
+pub mod demo;
 pub mod details;
 pub mod disk;
 pub mod filesystem;
@@ -42,6 +43,7 @@ use pulse_core::Config;
 
 pub use agent::SelfCollector;
 pub use cgroup::CgroupCollector;
+pub use demo::DemoFs;
 pub use disk::DiskCollector;
 pub use fs::{FixtureFs, FsSource, FsSourceExt, RealFs, DEFAULT_CAP};
 pub use host::HostCollector;

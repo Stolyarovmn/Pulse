@@ -44,6 +44,14 @@ struct Cli {
     #[arg(short, long, global = true, value_name = "FILE")]
     config: Option<PathBuf>,
 
+    /// Демонстрационный сценарий вместо реального хоста.
+    ///
+    /// Нужен, потому что на здоровом хосте показать диагностику нечем:
+    /// правила молчат, Timeline пуст, diff пустой. Подменяется только слой
+    /// чтения файлов — коллекторы, граф, правила и история настоящие.
+    #[arg(long, global = true)]
+    demo: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -114,19 +122,20 @@ fn try_main() -> Result<(), Box<dyn Error>> {
     init_tracing(!interactive);
     let config = load_config(cli.config.as_deref())?;
 
+    let demo = cli.demo;
     match cli.command.unwrap_or(Command::Run) {
-        Command::Run => run_tui(&config),
-        Command::Serve => serve(&config),
-        Command::Top { limit } => top(&config, limit),
-        Command::Diff { from, to } => run_diff(&config, &from, &to),
-        Command::Scorecard { seconds } => scorecard(&config, seconds),
+        Command::Run => run_tui(&config, demo),
+        Command::Serve => serve(&config, demo),
+        Command::Top { limit } => top(&config, limit, demo),
+        Command::Diff { from, to } => run_diff(&config, &from, &to, demo),
+        Command::Scorecard { seconds } => scorecard(&config, seconds, demo),
         Command::Config {
             command: ConfigCommand::Print,
         } => {
             print!("{}", toml::to_string_pretty(&config)?);
             Ok(())
         }
-        Command::Check => check(&config),
+        Command::Check => check(&config, demo),
     }
 }
 
@@ -205,8 +214,19 @@ fn load_config(path: Option<&Path>) -> Result<PulseConfig, Box<dyn Error>> {
     Ok(config)
 }
 
-fn run_tui(config: &PulseConfig) -> Result<(), Box<dyn Error>> {
-    let runtime = AgentRuntime::start(config)?;
+/// Источник файловой системы: реальный хост или демонстрационный сценарий.
+fn source_fs(config: &PulseConfig, demo: bool) -> std::sync::Arc<dyn pulse_collect::FsSource> {
+    if demo {
+        let step = std::time::Duration::from_millis(config.general.interval_ms.max(1));
+        std::sync::Arc::new(pulse_collect::DemoFs::new(step))
+    } else {
+        std::sync::Arc::new(pulse_collect::RealFs)
+    }
+}
+
+fn run_tui(config: &PulseConfig, demo: bool) -> Result<(), Box<dyn Error>> {
+    let fs = source_fs(config, demo);
+    let runtime = AgentRuntime::start_with_fs(config, std::sync::Arc::clone(&fs))?;
     let exporter = if config.export.enabled {
         let handle = pulse_export::spawn(&config.export, runtime.source())?;
         tracing::info!(address = %handle.local_addr(), "экспортёр запущен");
@@ -218,10 +238,10 @@ fn run_tui(config: &PulseConfig) -> Result<(), Box<dyn Error>> {
     // Детали процесса читаются по требованию тем же источником файловой
     // системы, что и коллекторы: одна точка правды о `proc_root`.
     let details = std::sync::Arc::new(pulse_collect::details::ProcDetails::new(
-        std::sync::Arc::new(pulse_collect::RealFs),
+        fs,
         config.general.proc_root.clone(),
     ));
-    let result = pulse_tui::run(config, runtime.source(), runtime.history(), details);
+    let result = pulse_tui::run(config, runtime.source(), runtime.history(), details, demo);
     if let Some(handle) = exporter {
         handle.shutdown();
     }
@@ -229,11 +249,11 @@ fn run_tui(config: &PulseConfig) -> Result<(), Box<dyn Error>> {
     result.map_err(Into::into)
 }
 
-fn serve(config: &PulseConfig) -> Result<(), Box<dyn Error>> {
+fn serve(config: &PulseConfig, demo: bool) -> Result<(), Box<dyn Error>> {
     if !config.export.enabled {
         return Err("команда serve требует export.enabled = true".into());
     }
-    let runtime = AgentRuntime::start(config)?;
+    let runtime = AgentRuntime::start_with_fs(config, source_fs(config, demo))?;
     let _ = runtime.wait_for_tick(1, tick_timeout(config))?;
     let exporter = pulse_export::spawn(&config.export, runtime.source())?;
     println!("pulse: listening on http://{}", exporter.local_addr());
@@ -266,18 +286,18 @@ fn install_signal_flag() -> Result<Arc<AtomicBool>, Box<dyn Error>> {
     Ok(flag)
 }
 
-fn top(config: &PulseConfig, limit: usize) -> Result<(), Box<dyn Error>> {
+fn top(config: &PulseConfig, limit: usize, demo: bool) -> Result<(), Box<dyn Error>> {
     if !(1..=10_000).contains(&limit) {
         return Err("--limit должен быть в диапазоне 1..=10000".into());
     }
-    let runtime = AgentRuntime::start(config)?;
+    let runtime = AgentRuntime::start_with_fs(config, source_fs(config, demo))?;
     let snapshot = runtime.wait_for_tick(2, tick_timeout(config))?;
     print!("{}", text::render_top(&snapshot, limit));
     runtime.shutdown();
     Ok(())
 }
 
-fn run_diff(config: &PulseConfig, from: &str, to: &str) -> Result<(), Box<dyn Error>> {
+fn run_diff(config: &PulseConfig, from: &str, to: &str, demo: bool) -> Result<(), Box<dyn Error>> {
     let from_spec = parse_time_spec(from)?;
     let to_spec = parse_time_spec(to)?;
     let lookback = max_lookback(from_spec, to_spec);
@@ -288,7 +308,7 @@ fn run_diff(config: &PulseConfig, from: &str, to: &str) -> Result<(), Box<dyn Er
         );
     }
 
-    let runtime = AgentRuntime::start(config)?;
+    let runtime = AgentRuntime::start_with_fs(config, source_fs(config, demo))?;
     // Локальная история памяти начинается вместе с командой. Дополнительный
     // такт гарантирует точку слева от относительного маркера A.
     let fill = lookback
@@ -338,11 +358,11 @@ fn ensure_history_contains(
     Ok(())
 }
 
-fn scorecard(config: &PulseConfig, seconds: u64) -> Result<(), Box<dyn Error>> {
+fn scorecard(config: &PulseConfig, seconds: u64, demo: bool) -> Result<(), Box<dyn Error>> {
     if !(1..=300).contains(&seconds) {
         return Err("--seconds должен быть в диапазоне 1..=300".into());
     }
-    let runtime = AgentRuntime::start(config)?;
+    let runtime = AgentRuntime::start_with_fs(config, source_fs(config, demo))?;
     let started = Instant::now();
     thread::sleep(Duration::from_secs(seconds));
     let snapshot = runtime.wait_for_tick(1, tick_timeout(config))?;
@@ -351,11 +371,11 @@ fn scorecard(config: &PulseConfig, seconds: u64) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn check(config: &PulseConfig) -> Result<(), Box<dyn Error>> {
+fn check(config: &PulseConfig, demo: bool) -> Result<(), Box<dyn Error>> {
     if let Some(path) = &config.export.token_file {
         let _ = pulse_export::load_token(path)?;
     }
-    let runtime = AgentRuntime::start(config)?;
+    let runtime = AgentRuntime::start_with_fs(config, source_fs(config, demo))?;
     let snapshot = runtime.wait_for_tick(1, tick_timeout(config))?;
     if snapshot.agent.collector_errors > 0 {
         return Err(format!(

@@ -134,6 +134,7 @@ pub fn run(
     snapshot: SnapshotSource,
     history: Arc<RwLock<History>>,
     details: Arc<dyn pulse_core::ProcessDetailsSource>,
+    demo: bool,
 ) -> io::Result<()> {
     // Флаг ставится ДО перевода терминала в raw-режим: иначе сигнал в этом
     // окне оставил бы пользователя в сломанном терминале.
@@ -155,7 +156,8 @@ pub fn run(
     let theme = Theme::new(config.ui.ascii);
     let mut app = App::new(config.security.allow_actions)
         .with_details(details)
-        .with_icons(config.ui.icons);
+        .with_icons(config.ui.icons)
+        .with_demo(demo);
     let refresh = Duration::from_millis(config.ui.refresh_ms.clamp(50, 5_000));
     let mut current = snapshot();
 

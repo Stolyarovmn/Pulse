@@ -300,6 +300,12 @@ pub struct App {
     pub allow_actions: bool,
     /// Набор иконок категорий в пайпе (`ui.icons`).
     pub icons: pulse_core::config::IconSet,
+    /// Кадр собран демонстрационным сценарием, а не реальным хостом.
+    ///
+    /// Обязано быть видно в каждом кадре: демо показывает настоящие
+    /// проблемы настоящих правил, и без пометки оператор примет сценарий
+    /// за состояние своей машины.
+    pub demo: bool,
     /// Число колонок сетки пайпа в последнем кадре.
     ///
     /// Пишет экран, читает маршрутизация ввода: только кадр знает свою
@@ -333,6 +339,7 @@ impl Default for App {
             allow_actions: false,
             icons: pulse_core::config::IconSet::Off,
             pipe_cols: Cell::new(1),
+            demo: false,
             layout: crate::layout::LayoutEngine::new(),
             details: None,
             details_cache: RefCell::new(pulse_core::DetailsCache::default()),
@@ -451,6 +458,13 @@ impl App {
     /// двигала бы курсор по сетке, которой на экране нет.
     pub fn set_pipe_columns(&self, cols: usize) {
         self.pipe_cols.set(cols.max(1));
+    }
+
+    /// Отмечает кадр как демонстрационный.
+    #[must_use]
+    pub const fn with_demo(mut self, demo: bool) -> Self {
+        self.demo = demo;
+        self
     }
 
     #[must_use]
