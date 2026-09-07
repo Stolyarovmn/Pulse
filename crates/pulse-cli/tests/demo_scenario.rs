@@ -68,14 +68,21 @@ impl Pipeline {
 /// задачу, ради которой появилось, — показать диагностику на здоровом хосте.
 #[test]
 fn demo_scenario_opens_and_closes_a_problem_through_real_rules() {
-    // Шаг такта заведомо больше прогона: номер такта задаётся вручную через
-    // счётчик сцены, иначе тест зависел бы от реального времени.
+    // Такт задаётся явно, а не берётся из часов: иначе тест зависел бы от
+    // скорости прогона.
     let fs = Arc::new(DemoScene::default());
     let mut pipeline = Pipeline::new(Arc::clone(&fs) as Arc<dyn FsSource>);
 
+    // Такты идут подряд, без пропусков между циклами. Пропуск давал бы
+    // приращение счётчиков сразу за десятки тактов, а правила считают долю
+    // по приращению между соседними тактами (`d_throttled / d_periods`):
+    // такая ложная дельта открывает проблему заново и сбрасывает выдержку
+    // закрытия. Ошибка была бы тихой — тест «проходил» бы по запасу окна.
     let mut opened_at = None;
     let mut opened_kinds: Vec<String> = Vec::new();
-    for tick in 0..CYCLE_TICKS {
+    let mut still_open = usize::MAX;
+    let last_tick = CYCLE_TICKS * 2 + DEGRADE_FROM;
+    for tick in 0..=last_tick {
         fs.set_tick(tick);
         let problems = pipeline.step();
         if !problems.is_empty() && opened_at.is_none() {
@@ -85,6 +92,7 @@ fn demo_scenario_opens_and_closes_a_problem_through_real_rules() {
                 .map(|problem| problem.id.rule.to_string())
                 .collect();
         }
+        still_open = problems.len();
     }
 
     let opened_at = opened_at.expect(
@@ -99,23 +107,14 @@ fn demo_scenario_opens_and_closes_a_problem_through_real_rules() {
         !opened_kinds.is_empty(),
         "у открытой проблемы обязано быть имя правила"
     );
-
-    // Восстановление: после спада давления проблема обязана закрыться сама,
-    // по своему условию снятия, а не по команде извне.
-    let mut still_open = usize::MAX;
-    for tick in RECOVERED_TICKS {
-        fs.set_tick(tick);
-        still_open = pipeline.step().len();
-    }
+    // Последний такт прогона — конец фазы покоя, которая длиннее
+    // `clear_after_ticks`: проблема обязана закрыться сама, по своему
+    // условию снятия, а не по команде извне.
     assert_eq!(
         still_open, 0,
         "после восстановления и выдержки clear_after_ticks проблем быть не должно"
     );
 }
-
-/// Такты покоя следующего цикла: фаза покоя длиннее `clear_after_ticks`,
-/// поэтому выдержки хватает на закрытие проблемы.
-const RECOVERED_TICKS: std::ops::Range<u64> = (CYCLE_TICKS * 2)..(CYCLE_TICKS * 2 + DEGRADE_FROM);
 
 /// Обёртка над [`DemoFs`] с управляемым номером такта.
 ///
@@ -123,6 +122,7 @@ const RECOVERED_TICKS: std::ops::Range<u64> = (CYCLE_TICKS * 2)..(CYCLE_TICKS * 
 /// времени прогона. Здесь номер задаётся явно, а дерево остаётся то же.
 #[derive(Debug, Default)]
 struct DemoScene {
+    scene: std::sync::Mutex<Option<(u64, DemoFs)>>,
     tick: std::sync::atomic::AtomicU64,
 }
 
@@ -131,33 +131,41 @@ impl DemoScene {
         self.tick.store(tick, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Источник для текущего такта.
+    /// Выполняет чтение на дереве текущего такта.
     ///
-    /// `DemoFs` пересобирает дерево при смене такта, поэтому здесь хватает
-    /// экземпляра с нулевым шагом: номер такта подставляется снаружи.
-    fn scene(&self) -> DemoFs {
-        DemoFs::at_tick(self.tick.load(std::sync::atomic::Ordering::Relaxed))
+    /// Дерево кешируется на такт: коллекторы делают десятки чтений за такт,
+    /// и пересборка на каждое чтение превращала прогон в сотни тысяч сборок
+    /// полного дерева.
+    fn with_scene<T>(&self, f: impl FnOnce(&DemoFs) -> T) -> T {
+        let tick = self.tick.load(std::sync::atomic::Ordering::Relaxed);
+        let mut guard = self.scene.lock().expect("замок сцены");
+        let needs_rebuild = guard.as_ref().is_none_or(|(built, _)| *built != tick);
+        if needs_rebuild {
+            *guard = Some((tick, DemoFs::at_tick(tick)));
+        }
+        let (_, scene) = guard.as_ref().expect("сцена собрана выше");
+        f(scene)
     }
 }
 
 impl FsSource for DemoScene {
     fn read(&self, path: &std::path::Path, cap: usize) -> std::io::Result<Vec<u8>> {
-        self.scene().read(path, cap)
+        self.with_scene(|scene| scene.read(path, cap))
     }
 
     fn read_dir(&self, path: &std::path::Path) -> std::io::Result<Vec<std::ffi::OsString>> {
-        self.scene().read_dir(path)
+        self.with_scene(|scene| scene.read_dir(path))
     }
 
     fn read_link(&self, path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
-        self.scene().read_link(path)
+        self.with_scene(|scene| scene.read_link(path))
     }
 
     fn inode(&self, path: &std::path::Path) -> std::io::Result<u64> {
-        self.scene().inode(path)
+        self.with_scene(|scene| scene.inode(path))
     }
 
     fn statfs(&self, path: &std::path::Path) -> std::io::Result<pulse_collect::fs::FsUsage> {
-        self.scene().statfs(path)
+        self.with_scene(|scene| scene.statfs(path))
     }
 }

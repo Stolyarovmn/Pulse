@@ -241,32 +241,67 @@ pub fn sparkline(points: &[(Timestamp, f64)], width: usize, theme: &Theme) -> St
 ///
 /// Разрядка между ячейками - требование §183 («state cells have spacing when
 /// width permits»): без неё блоки склеиваются в сплошную заливку.
+///
+/// `window` — запрошенный интервал `(от, до)`. Точки раскладываются по нему
+/// бакетами, а не берутся хвостом ряда. Хвост был дефектом: дорожка обещала
+/// окно из подписи (например пять минут), а показывала последние `cells`
+/// тактов, то есть десятки секунд. Изменения за окно в кадр не попадали, и
+/// живая метрика выглядела мёртвой линией.
+///
+/// В бакете берётся максимум: для доли занижать пик нельзя, а среднее
+/// сглаживает именно тот момент, из-за которого оператор и смотрит кадр.
+/// Бакет без данных рисуется точкой, а не нулём: «не измеряли» и «было
+/// ноль» — разные утверждения (§186).
 #[must_use]
-pub fn ratio_lane(points: &[(Timestamp, f64)], width: usize, theme: &Theme) -> String {
+pub fn ratio_lane(
+    points: &[(Timestamp, f64)],
+    width: usize,
+    window: (Timestamp, Timestamp),
+    theme: &Theme,
+) -> String {
     if width == 0 {
         return String::new();
     }
     let blocks = theme.glyphs.blocks;
     let last_index = blocks.len().saturating_sub(1);
+    let gap = if matches!(theme.capability, crate::theme::Capability::Ascii) {
+        '.'
+    } else {
+        '·'
+    };
     // Разрядка стоит две колонки на ячейку; при нехватке места идём плотно.
     let spaced = width >= 16;
-    let cells = if spaced { width / 2 } else { width };
+    let cells = (if spaced { width / 2 } else { width }).max(1);
 
-    let values: Vec<f64> = points
-        .iter()
-        .map(|(_, v)| *v)
-        .filter(|v| v.is_finite())
-        .collect();
-    let start = values.len().saturating_sub(cells);
-    let tail = values.get(start..).unwrap_or(&values);
+    let (from, to) = window;
+    let span = to.as_millis().saturating_sub(from.as_millis()).max(1);
+    let mut buckets: Vec<Option<f64>> = vec![None; cells];
+    for (at, value) in points {
+        if !value.is_finite() || at.as_millis() < from.as_millis() {
+            continue;
+        }
+        let offset = at.as_millis().saturating_sub(from.as_millis());
+        let index = usize::try_from(offset * (cells as u64) / span)
+            .unwrap_or(cells - 1)
+            .min(cells - 1);
+        if let Some(slot) = buckets.get_mut(index) {
+            *slot = Some(slot.map_or(*value, |kept: f64| kept.max(*value)));
+        }
+    }
 
     let mut out = String::with_capacity(width);
-    for value in tail {
+    for bucket in buckets {
         if spaced && !out.is_empty() {
             out.push(' ');
         }
-        let level = ((value.clamp(0.0, 1.0) * last_index as f64).round() as usize).min(last_index);
-        out.push(blocks.get(level).copied().unwrap_or('_'));
+        match bucket {
+            Some(value) => {
+                let level =
+                    ((value.clamp(0.0, 1.0) * last_index as f64).round() as usize).min(last_index);
+                out.push(blocks.get(level).copied().unwrap_or('_'));
+            }
+            None => out.push(gap),
+        }
     }
     out
 }
@@ -363,15 +398,28 @@ mod tests {
         assert_eq!(truncate("abc", 0), "");
     }
 
+    /// Окно ряда: от первой до последней точки включительно.
+    fn window(values: &[f64]) -> (Timestamp, Timestamp) {
+        let last = values.len().saturating_sub(1) as u64;
+        (
+            Timestamp::from_millis(0),
+            Timestamp::from_millis(last * 1000),
+        )
+    }
+
     #[test]
     fn ratio_lane_uses_absolute_scale_not_own_minmax() {
         let t = theme();
         // Дрожание простоя обязано остаться у пола, а не растянуться на всю
         // высоту: иначе три дорожки сливаются в светлое полотно (§183).
-        let idle = ratio_lane(&series(&[0.00, 0.04, 0.01, 0.03, 0.02]), 40, &t);
-        let cells: Vec<char> = idle.chars().filter(|c| *c != ' ').collect();
-        assert!(!cells.is_empty(), "дорожка обязана быть нарисована");
+        let values = [0.00, 0.04, 0.01, 0.03, 0.02];
+        let idle = ratio_lane(&series(&values), 40, window(&values), &t);
         let floor = t.glyphs.blocks[0];
+        let cells: Vec<char> = idle
+            .chars()
+            .filter(|c| *c != ' ' && *c != '·' && *c != '.')
+            .collect();
+        assert!(!cells.is_empty(), "дорожка обязана быть нарисована");
         assert!(
             cells.iter().all(|c| *c == floor),
             "простой обязан идти по полу шкалы: {idle:?}"
@@ -379,7 +427,7 @@ mod tests {
 
         // Тот же ряд через относительную нормировку даёт разброс - это и есть
         // прежний дефект, поэтому сравнение зафиксировано тестом.
-        let relative = sparkline(&series(&[0.00, 0.04, 0.01, 0.03, 0.02]), 5, &t);
+        let relative = sparkline(&series(&values), 5, &t);
         assert!(
             relative.chars().filter(|c| *c != ' ').any(|c| c != floor),
             "относительная шкала обязана давать разброс: {relative:?}"
@@ -389,12 +437,13 @@ mod tests {
     #[test]
     fn ratio_lane_is_spaced_when_width_permits() {
         let t = theme();
-        let wide = ratio_lane(&series(&[0.1, 0.5, 0.9]), 40, &t);
+        let values = [0.1, 0.5, 0.9];
+        let wide = ratio_lane(&series(&values), 40, window(&values), &t);
         assert!(
             wide.contains(' '),
             "широкая дорожка обязана иметь разрядку: {wide:?}"
         );
-        let narrow = ratio_lane(&series(&[0.1, 0.5, 0.9]), 6, &t);
+        let narrow = ratio_lane(&series(&values), 6, window(&values), &t);
         assert!(
             !narrow.contains(' '),
             "узкая дорожка идёт плотно: {narrow:?}"
@@ -405,15 +454,70 @@ mod tests {
     fn ratio_lane_reaches_top_only_at_full_load() {
         let t = theme();
         let top = *t.glyphs.blocks.last().expect("blocks");
-        let full = ratio_lane(&series(&[1.0, 1.0]), 8, &t);
+        // Две точки на восемь ячеек оставляют пропуски — они не нагрузка,
+        // поэтому в проверку уровня не входят.
+        let drawn = |lane: String| -> Vec<char> {
+            lane.chars().filter(|c| *c != ' ' && *c != '·').collect()
+        };
+        let full = drawn(ratio_lane(&series(&[1.0, 1.0]), 8, window(&[1.0, 1.0]), &t));
+        assert!(!full.is_empty(), "дорожка обязана быть нарисована");
         assert!(
-            full.chars().all(|c| c == top),
+            full.iter().all(|c| *c == top),
             "полная нагрузка обязана быть на потолке: {full:?}"
         );
-        let half = ratio_lane(&series(&[0.5]), 8, &t);
+        let half = drawn(ratio_lane(&series(&[0.5]), 8, window(&[0.5]), &t));
         assert!(
-            half.chars().all(|c| c != top),
+            half.iter().all(|c| *c != top),
             "половина нагрузки не обязана касаться потолка: {half:?}"
+        );
+    }
+
+    /// Дорожка обязана покрывать запрошенное окно, а не хвост ряда.
+    ///
+    /// Дефект с живого прогона: подпись обещала пять минут, а рисовались
+    /// последние `cells` тактов — десятки секунд. Изменения за окно в кадр
+    /// не попадали, и меняющаяся метрика выглядела мёртвой линией.
+    #[test]
+    fn ratio_lane_covers_the_requested_window_not_the_tail() {
+        let t = theme();
+        // Триста тактов: сначала пол, в конце потолок. Хвост из последних
+        // ячеек показал бы только потолок и скрыл бы всю историю.
+        let mut values = vec![0.0_f64; 280];
+        values.extend(std::iter::repeat_n(1.0_f64, 20));
+        let lane = ratio_lane(&series(&values), 40, window(&values), &t);
+        let cells: Vec<char> = lane.chars().filter(|c| *c != ' ').collect();
+        let floor = t.glyphs.blocks[0];
+        let top = *t.glyphs.blocks.last().expect("blocks");
+        assert!(
+            cells.contains(&floor),
+            "начало окна обязано остаться в кадре: {lane:?}"
+        );
+        assert!(
+            cells.contains(&top),
+            "конец окна обязан быть в кадре: {lane:?}"
+        );
+    }
+
+    /// Пустой бакет обязан быть назван отсутствием данных, а не нулём:
+    /// «не измеряли» и «было ноль» — разные утверждения (§186).
+    #[test]
+    fn ratio_lane_marks_gaps_instead_of_drawing_zero() {
+        let t = theme();
+        // Точки только в первой половине окна, вторая половина без данных.
+        let points = series(&[0.9, 0.9, 0.9]);
+        let lane = ratio_lane(
+            &points,
+            40,
+            (Timestamp::from_millis(0), Timestamp::from_millis(20_000)),
+            &t,
+        );
+        assert!(
+            lane.contains('·'),
+            "пропуск обязан быть отмечен точкой: {lane:?}"
+        );
+        assert!(
+            !lane.contains(t.glyphs.blocks[0]),
+            "пропуск не имеет права выглядеть нулевой нагрузкой: {lane:?}"
         );
     }
 

@@ -58,7 +58,7 @@ pub(crate) fn render(
         ])
         .split(area);
 
-    render_rail(frame, rect(&top, 0), snapshot, app, theme);
+    render_rail(frame, rect(&top, 0), snapshot, &story, app, theme);
     render_state_river(frame, rect(&top, 1), snapshot, &story, theme);
     render_metric_lanes(frame, rect(&top, 2), snapshot, app, theme, history);
 
@@ -146,8 +146,95 @@ impl StoryRow {
     }
 }
 
+/// Отметка события на оси времени.
+///
+/// Ось без отметок — прямая линия, по которой нельзя понять, когда именно
+/// что-то случилось: она сообщала только «наблюдение началось тогда,
+/// сейчас — теперь». Отметки ставят события в их момент, а подписи дают
+/// таймкод, то есть ось становится измерением, а не рамкой.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RailMark {
+    /// Колонка внутри оси.
+    column: usize,
+    class: StateClass,
+    at: Timestamp,
+}
+
+/// Раскладывает события по колонкам оси.
+///
+/// Отдельная чистая функция: раскладка проверяется тестом, а рисование
+/// остаётся тривиальным. При совпадении колонок остаётся худшее состояние —
+/// потерять `crit` из-за соседнего `normal` недопустимо.
+fn rail_marks(story: &[StoryRow], start: Timestamp, end: Timestamp, width: usize) -> Vec<RailMark> {
+    let inner = width.saturating_sub(2);
+    if inner == 0 {
+        return Vec::new();
+    }
+    let span = end.as_millis().saturating_sub(start.as_millis()).max(1);
+    let mut marks: Vec<RailMark> = Vec::new();
+    for row in story {
+        let Some(class) = state_transition(row.kind) else {
+            continue;
+        };
+        if row.at.as_millis() < start.as_millis() {
+            continue;
+        }
+        let offset = row.at.as_millis().saturating_sub(start.as_millis());
+        let column = usize::try_from(offset * (inner as u64) / span)
+            .unwrap_or(inner - 1)
+            .min(inner - 1)
+            + 1;
+        match marks.iter_mut().find(|mark| mark.column == column) {
+            // Порядок `StateClass` идёт от нормы к отказу, поэтому «худшее»
+            // это максимум, а не отдельная таблица приоритетов.
+            Some(existing) if class > existing.class => {
+                existing.class = class;
+                existing.at = row.at;
+            }
+            Some(_) => {}
+            None => marks.push(RailMark {
+                column,
+                class,
+                at: row.at,
+            }),
+        }
+    }
+    marks.sort_unstable_by_key(|mark| mark.column);
+    marks
+}
+
+/// Строка подписей: таймкод под отметкой, пока хватает места.
+///
+/// Подписать все отметки нельзя — таймкод занимает восемь колонок, и
+/// подписи наложились бы друг на друга. Поэтому слева направо берутся те,
+/// что укладываются без пересечения: подпись обязана читаться, а остальные
+/// отметки остаются видимы на оси.
+fn rail_labels(marks: &[RailMark], width: usize) -> String {
+    let mut out = String::new();
+    for mark in marks {
+        let label = mark.at.to_string();
+        let start_at = mark.column.saturating_sub(label.chars().count() / 2);
+        if start_at < out.chars().count() + 1 {
+            continue;
+        }
+        if start_at + label.chars().count() > width {
+            break;
+        }
+        out.push_str(&" ".repeat(start_at - out.chars().count()));
+        out.push_str(&label);
+    }
+    out
+}
+
 /// Observation boundary → LIVE cursor. До boundary состояние неизвестно.
-fn render_rail(frame: &mut Frame<'_>, area: Rect, snapshot: &Snapshot, app: &App, theme: &Theme) {
+fn render_rail(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    snapshot: &Snapshot,
+    story: &[StoryRow],
+    app: &App,
+    theme: &Theme,
+) {
     let ascii = matches!(theme.capability, Capability::Ascii);
     let start = snapshot
         .entity(snapshot.host)
@@ -168,6 +255,50 @@ fn render_rail(frame: &mut Frame<'_>, area: Rect, snapshot: &Snapshot, app: &App
     let live_mark = if ascii { '*' } else { '●' };
     let inner = width.saturating_sub(2);
 
+    let marks = rail_marks(story, start, cursor, width);
+    let mut axis: Vec<Span<'_>> = vec![Span::styled(start_mark.to_string(), theme.strong())];
+    let mut column = 1;
+    for mark in &marks {
+        if mark.column > column {
+            axis.push(Span::styled(
+                std::iter::repeat_n(line_char, mark.column - column).collect::<String>(),
+                theme.dim(),
+            ));
+            column = mark.column;
+        }
+        axis.push(Span::styled(
+            mark.class.symbol(theme.capability).to_string(),
+            mark.class.style(theme),
+        ));
+        column += 1;
+    }
+    if column <= inner {
+        axis.push(Span::styled(
+            std::iter::repeat_n(line_char, inner + 1 - column).collect::<String>(),
+            theme.dim(),
+        ));
+    }
+    axis.push(Span::styled(live_mark.to_string(), theme.strong()));
+
+    // Третья строка несёт таймкоды отметок; пока отметок нет, она остаётся
+    // прежней подписью границ наблюдения — пустой строки в кадре не бывает.
+    let footer = if marks.is_empty() {
+        Line::from(vec![
+            Span::styled("observation started", theme.dim()),
+            Span::raw(" ".repeat(width.saturating_sub(28))),
+            Span::styled(
+                if app.timeline.time_cursor.is_some() {
+                    "cursor"
+                } else {
+                    "live"
+                },
+                theme.strong(),
+            ),
+        ])
+    } else {
+        Line::from(Span::styled(rail_labels(&marks, width), theme.dim()))
+    };
+
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(vec![
@@ -175,26 +306,8 @@ fn render_rail(frame: &mut Frame<'_>, area: Rect, snapshot: &Snapshot, app: &App
                 Span::raw(" ".repeat(padding)),
                 Span::styled(label, theme.strong()),
             ]),
-            Line::from(vec![
-                Span::styled(start_mark.to_string(), theme.strong()),
-                Span::styled(
-                    std::iter::repeat_n(line_char, inner).collect::<String>(),
-                    theme.dim(),
-                ),
-                Span::styled(live_mark.to_string(), theme.strong()),
-            ]),
-            Line::from(vec![
-                Span::styled("observation started", theme.dim()),
-                Span::raw(" ".repeat(width.saturating_sub(28))),
-                Span::styled(
-                    if app.timeline.time_cursor.is_some() {
-                        "cursor"
-                    } else {
-                        "live"
-                    },
-                    theme.strong(),
-                ),
-            ]),
+            Line::from(axis),
+            footer,
         ]),
         area,
     );
@@ -293,7 +406,7 @@ fn render_metric_lanes(
                 // цветом: три ярких ряда на всю ширину читаются как полотно,
                 // а не как измерение.
                 Span::styled(
-                    crate::format::ratio_lane(&points, width, theme),
+                    crate::format::ratio_lane(&points, width, (from, to), theme),
                     theme.dim(),
                 )
             } else {
@@ -511,5 +624,116 @@ fn event_marker(kind: EventKind, capability: Capability) -> char {
         // Restart/OOM/deploy-like lifecycle facts are discrete events.
         // `!` is event punctuation, never a State Glyph cell (§183–186).
         _ => '!',
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(kind: EventKind, at_ms: u64) -> StoryRow {
+        StoryRow {
+            at: Timestamp::from_millis(at_ms),
+            last_at: Timestamp::from_millis(at_ms),
+            kind,
+            name: "demo-host".to_string(),
+            detail: String::new(),
+            count: 1,
+        }
+    }
+
+    /// Отметки обязаны стоять в момент события, а не в начале оси.
+    ///
+    /// Дефект с живого прогона: ось была прямой линией, по которой нельзя
+    /// понять, когда именно открылась проблема.
+    #[test]
+    fn marks_stand_at_the_moment_of_the_event() {
+        let start = Timestamp::from_millis(0);
+        let end = Timestamp::from_millis(100_000);
+        let story = [
+            row(EventKind::ProblemOpened, 25_000),
+            row(EventKind::ProblemClosed, 75_000),
+        ];
+        let marks = rail_marks(&story, start, end, 42);
+
+        assert_eq!(marks.len(), 2, "оба события обязаны попасть на ось");
+        assert!(
+            marks[0].column < marks[1].column,
+            "порядок на оси обязан совпадать с порядком во времени: {marks:?}"
+        );
+        // Четверть окна из сорока внутренних колонок — десятая колонка.
+        assert_eq!(
+            marks[0].column, 11,
+            "позиция считается по времени: {marks:?}"
+        );
+        assert_eq!(marks[1].column, 31);
+        assert_eq!(marks[0].class, StateClass::Warning);
+        assert_eq!(marks[1].class, StateClass::Normal);
+    }
+
+    /// В одной колонке остаётся худшее состояние: потерять отказ из-за
+    /// соседнего восстановления недопустимо.
+    #[test]
+    fn worst_state_wins_a_shared_column() {
+        let story = [
+            row(EventKind::ProblemClosed, 1_000),
+            row(EventKind::CollectorError, 1_100),
+        ];
+        let marks = rail_marks(
+            &story,
+            Timestamp::from_millis(0),
+            Timestamp::from_millis(100_000),
+            20,
+        );
+        assert_eq!(marks.len(), 1, "события попали в одну колонку: {marks:?}");
+        assert_eq!(marks[0].class, StateClass::Failed);
+    }
+
+    /// События до начала окна на ось не попадают: ось описывает окно,
+    /// а не всю историю.
+    #[test]
+    fn events_before_the_window_are_dropped() {
+        let story = [row(EventKind::ProblemOpened, 500)];
+        let marks = rail_marks(
+            &story,
+            Timestamp::from_millis(10_000),
+            Timestamp::from_millis(20_000),
+            40,
+        );
+        assert!(marks.is_empty(), "{marks:?}");
+    }
+
+    /// Подписи обязаны читаться: наложение таймкодов запрещено, поэтому
+    /// часть отметок остаётся без подписи, но видимой на оси.
+    #[test]
+    fn labels_never_overlap() {
+        let marks = [
+            RailMark {
+                column: 3,
+                class: StateClass::Warning,
+                at: Timestamp::from_millis(3_000),
+            },
+            RailMark {
+                column: 5,
+                class: StateClass::Normal,
+                at: Timestamp::from_millis(5_000),
+            },
+            RailMark {
+                column: 40,
+                class: StateClass::Critical,
+                at: Timestamp::from_millis(40_000),
+            },
+        ];
+        let line = rail_labels(&marks, 60);
+        let stamps: Vec<&str> = line.split_whitespace().collect();
+        assert_eq!(
+            stamps.len(),
+            2,
+            "вторая отметка стоит слишком близко и подписи не получает: {line:?}"
+        );
+        assert!(
+            line.chars().count() <= 60,
+            "строка подписей не имеет права выходить за кадр: {line:?}"
+        );
     }
 }
