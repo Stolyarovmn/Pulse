@@ -41,6 +41,7 @@ use super::{focused_section, observation, rect, section, vitals_line};
 const CHANGES_LIMIT: usize = 3;
 
 /// Отрисовка главного экрана.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -48,6 +49,7 @@ pub(crate) fn render(
     app: &mut App,
     plan: &LayoutPlan,
     theme: &Theme,
+    history: Option<&pulse_store::History>,
 ) {
     let composition = OverviewComposition::resolve_dimensions(area.width, area.height);
 
@@ -185,6 +187,7 @@ pub(crate) fn render(
                 focused: app.pane == crate::layout::Pane::Primary,
                 rule_width: None,
             },
+            &TrendSource { snapshot, history },
             plan,
             theme,
         );
@@ -197,6 +200,7 @@ pub(crate) fn render(
                 app.pane == crate::layout::Pane::Inspector,
                 app.overview.preview_relation_selected,
             ),
+            Some(&TrendSource { snapshot, history }),
             plan,
             theme,
         );
@@ -220,6 +224,7 @@ pub(crate) fn render(
                 focused: true,
                 rule_width: Some(bottom.width),
             },
+            &TrendSource { snapshot, history },
             plan,
             theme,
         );
@@ -375,12 +380,22 @@ struct TableView {
     rule_width: Option<u16>,
 }
 
+/// Источник тренда для строк таблицы.
+///
+/// Отдельная структура, а не два параметра: у функции отрисовки иначе
+/// набирается восемь аргументов, и подпись перестаёт читаться.
+pub(crate) struct TrendSource<'a> {
+    pub snapshot: &'a Snapshot,
+    pub history: Option<&'a pulse_store::History>,
+}
+
 /// Explainable Relevant/Key Entities (v0.9 §165, §176, §190).
 fn render_entities(
     frame: &mut Frame<'_>,
     area: Rect,
     rows: &[LogicalRow],
     view: &TableView,
+    source: &TrendSource<'_>,
     plan: &LayoutPlan,
     theme: &Theme,
 ) {
@@ -421,15 +436,17 @@ fn render_entities(
 
     let table = rect(&chunks, 2);
     let show_why = table.width >= 58;
+    // Колонка тренда стоит 20 колонок: форма плюс подписанный пик. Она
+    // появляется только когда есть место и после `WHY`, потому что «почему
+    // эта сущность здесь» важнее формы её нагрузки.
+    let show_trend = table.width >= 78;
     let mut lines: Vec<Line<'_>> = Vec::new();
-    lines.push(Line::from(Span::styled(
-        if show_why {
-            "  NAME                    CPU      MEM      S  WHY"
-        } else {
-            "  NAME                    CPU      MEM      S"
-        },
-        theme.dim(),
-    )));
+    let header = match (show_why, show_trend) {
+        (true, true) => "  NAME                    CPU      MEM      S  CPU 60s        PEAK   WHY",
+        (true, false) => "  NAME                    CPU      MEM      S  WHY",
+        (false, _) => "  NAME                    CPU      MEM      S",
+    };
+    lines.push(Line::from(Span::styled(header, theme.dim())));
     let visible = usize::from(table.height).saturating_sub(1);
     let start = view.selected.saturating_sub(visible.saturating_sub(1));
     for (index, logical) in rows.iter().enumerate().skip(start).take(visible) {
@@ -440,20 +457,30 @@ fn render_entities(
             .reasons
             .first()
             .map_or("key", |reason| reason.label());
-        let text = if show_why {
-            format!(
+        let trend = if show_trend {
+            trend_cell(source, logical, theme)
+        } else {
+            String::new()
+        };
+        let text = match (show_why, show_trend) {
+            (true, true) => format!(
+                "{marker}{name:<22} {:>6} {:>8}  {}  {trend}  {why}",
+                crate::format::cores(logical.row.cpu),
+                crate::format::bytes(logical.row.memory),
+                logical.row.state.symbol(theme.capability),
+            ),
+            (true, false) => format!(
                 "{marker}{name:<22} {:>6} {:>8}  {}  {why}",
                 crate::format::cores(logical.row.cpu),
                 crate::format::bytes(logical.row.memory),
                 logical.row.state.symbol(theme.capability),
-            )
-        } else {
-            format!(
+            ),
+            (false, _) => format!(
                 "{marker}{name:<22} {:>6} {:>8}  {}",
                 crate::format::cores(logical.row.cpu),
                 crate::format::bytes(logical.row.memory),
                 logical.row.state.symbol(theme.capability),
-            )
+            ),
         };
         lines.push(Line::from(Span::styled(
             text,
@@ -467,16 +494,43 @@ fn render_entities(
     frame.render_widget(Paragraph::new(lines), table);
 }
 
+/// Ячейка тренда: форма за минуту и подписанный пик.
+///
+/// Пик печатается всегда, когда форма нарисована: без него амплитуда ничего
+/// не значит — всплеск до 0.02 ядра выглядел бы как всплеск до четырёх.
+/// Пока точек меньше двух, вместо формы стоит честная отметка ожидания.
+fn trend_cell(source: &TrendSource<'_>, logical: &LogicalRow, theme: &Theme) -> String {
+    const LANE: usize = 12;
+    let key = pulse_core::sample::SeriesKey::new(
+        logical.row.id,
+        crate::rows::cpu_metric(logical.row.kind),
+    );
+    let Some(trend) = crate::trend::of_series(source.history, source.snapshot, key, LANE, theme)
+    else {
+        return format!("{:<LANE$}  {:>5}", "", "—");
+    };
+    if !trend.is_measured() {
+        return format!("{:<LANE$}  {:>5}", "collecting", "—");
+    }
+    format!(
+        "{:<LANE$}  {:>5}",
+        trend.lane,
+        crate::format::cores(trend.peak)
+    )
+}
+
 /// Панель выбранной сущности (разделы 145, 146).
 ///
 /// Отвечает на вопрос «что это такое», не заставляя уходить в Inspect. Связи
 /// агрегированы: список раскрывается по `Enter` (раздел 14 задания).
+#[allow(clippy::too_many_arguments)]
 fn render_selected(
     frame: &mut Frame<'_>,
     area: Rect,
     snapshot: &Snapshot,
     row: Option<&LogicalRow>,
     interaction: (bool, usize),
+    trend: Option<&TrendSource<'_>>,
     plan: &LayoutPlan,
     theme: &Theme,
 ) {
@@ -529,6 +583,26 @@ fn render_selected(
     }
     lines.push(Line::from(""));
     lines.push(pair("CPU", crate::format::cores(logical.row.cpu)));
+    // Пик и среднее за минуту рядом с текущим значением: одно число
+    // не отличает «всегда столько» от «только что подскочило», а форма
+    // в колонке тренда нормирована по пику и без него не читается.
+    if let Some(found) = trend.and_then(|source| {
+        let key = pulse_core::sample::SeriesKey::new(
+            logical.row.id,
+            crate::rows::cpu_metric(logical.row.kind),
+        );
+        crate::trend::of_series(source.history, source.snapshot, key, 0, theme)
+            .filter(crate::trend::Trend::is_measured)
+    }) {
+        lines.push(pair(
+            "CPU 60s",
+            format!(
+                "peak {}  avg {}",
+                crate::format::cores(found.peak),
+                crate::format::cores(found.mean)
+            ),
+        ));
+    }
     lines.push(pair("MEM", crate::format::bytes(logical.row.memory)));
     if let Some(io) = logical.row.io {
         lines.push(pair("IO", crate::format::rate(io)));

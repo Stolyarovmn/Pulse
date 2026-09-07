@@ -235,6 +235,10 @@ pub fn entity_columns() -> Vec<Column> {
         Column::new("OWNER", "OWNER", 2, 8, 24, Align::Left, 0),
         Column::new("IO", "IO", 3, 5, 10, Align::Right, 1),
         Column::new("NET", "NET", 3, 5, 10, Align::Right, 0),
+        // Тренд уходит первым при сужении: форма нагрузки полезна, но
+        // читается только на широком кадре, а число в колонке CPU остаётся
+        // и без неё.
+        Column::new("TREND", "CPU 60s", 4, 8, 14, Align::Left, 0),
     ]
 }
 
@@ -250,11 +254,22 @@ mod tests {
             plan.visible.iter().map(|i| columns[*i].title).collect()
         };
 
-        let full = plan(&columns, 120);
+        let full = plan(&columns, 140);
         assert_eq!(
             names(&full),
-            vec!["NAME", "STATE", "CPU", "MEM", "KIND", "OWNER", "IO", "NET"]
+            vec!["NAME", "STATE", "CPU", "MEM", "KIND", "OWNER", "IO", "NET", "TREND"],
+            "на широком кадре видны все колонки, включая тренд"
         );
+
+        // Тренд уходит первым: форма нагрузки полезна, но число в колонке
+        // `CPU` остаётся и без неё.
+        let wide = plan(&columns, 78);
+        assert!(
+            !names(&wide).contains(&"TREND"),
+            "тренд обязан уступать место раньше остальных: {:?}",
+            names(&wide)
+        );
+        assert!(names(&wide).contains(&"OWNER"));
 
         // Раздел 94, Medium: остаются ENTITY, CPU, MEM, OWNER, STATE.
         let medium = plan(&columns, 70);

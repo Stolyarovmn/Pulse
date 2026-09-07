@@ -103,9 +103,13 @@ pub fn render(
         inspector::render(frame, body, snapshot, app, &plan, theme);
     } else {
         match app.screen {
-            Screen::Overview => overview::render(frame, body, snapshot, app, &plan, theme),
+            Screen::Overview => {
+                overview::render(frame, body, snapshot, app, &plan, theme, history);
+            }
             Screen::Problems => problems::render(frame, body, snapshot, app, &plan, theme),
-            Screen::Entities => entities::render(frame, body, snapshot, app, &plan, theme),
+            Screen::Entities => {
+                entities::render(frame, body, snapshot, app, &plan, theme, history);
+            }
             Screen::Timeline => {
                 timeline::render(frame, body, snapshot, app, &plan, theme, history);
             }
@@ -480,6 +484,7 @@ pub(crate) fn render_logical_table(
     area: Rect,
     rows: &[LogicalRow],
     selected: usize,
+    trend: Option<&overview::TrendSource<'_>>,
     theme: &Theme,
 ) {
     if area.height == 0 || area.width == 0 {
@@ -541,6 +546,28 @@ pub(crate) fn render_logical_table(
                     row.state.style(theme),
                 ),
                 "CPU" => (format::cores(row.cpu), theme.text()),
+                "TREND" => (
+                    // Форма нагрузки за минуту. Масштаб — пик окна, поэтому
+                    // амплитуда сама по себе ничего не значит; число рядом
+                    // остаётся в колонке `CPU`, а пик виден в панели
+                    // выбранного. Без истории колонка честно пуста.
+                    trend.map_or_else(String::new, |source| {
+                        let key = pulse_core::sample::SeriesKey::new(
+                            row.id,
+                            crate::rows::cpu_metric(row.kind),
+                        );
+                        crate::trend::of_series(
+                            source.history,
+                            source.snapshot,
+                            key,
+                            usize::from(*width),
+                            theme,
+                        )
+                        .filter(crate::trend::Trend::is_measured)
+                        .map_or_else(String::new, |found| found.lane)
+                    }),
+                    theme.dim(),
+                ),
                 "MEM" => (format::bytes(row.memory), theme.text()),
                 // Вид несёт состав объекта: `unit+12p` честнее, чем `unit`.
                 "KIND" => (logical.kind_label(), theme.dim()),

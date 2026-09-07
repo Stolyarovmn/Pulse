@@ -34,6 +34,7 @@ pub mod screens;
 pub mod state;
 pub mod table;
 pub mod theme;
+pub mod trend;
 pub mod ui;
 
 use std::io::{self, Stdout};

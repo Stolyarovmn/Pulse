@@ -117,6 +117,19 @@ pub fn cpu_of(snapshot: &Snapshot, entity: &Entity) -> f64 {
     snapshot.value_or(entity.id, metric, 0.0)
 }
 
+/// Метрика CPU для вида сущности.
+///
+/// Нужна отдельно от [`cpu_of`]: колонка тренда читает не текущее значение,
+/// а ряд из истории, и ключ серии обязан совпадать с тем, по которому
+/// считается число в той же строке — иначе форма и число описывают разное.
+#[must_use]
+pub const fn cpu_metric(kind: EntityKind) -> pulse_core::metric::MetricId {
+    match kind {
+        EntityKind::Process => ids::PROC_CPU_CORES,
+        _ => ids::CG_CPU_CORES,
+    }
+}
+
 /// Потребление памяти сущностью в байтах.
 pub fn memory_of(snapshot: &Snapshot, entity: &Entity) -> f64 {
     let metric = match entity.kind {

@@ -259,6 +259,24 @@ pub fn ratio_lane(
     window: (Timestamp, Timestamp),
     theme: &Theme,
 ) -> String {
+    scaled_lane(points, width, window, 1.0, theme)
+}
+
+/// Дорожка величины с явно названным масштабом.
+///
+/// Нужна там, где величина не доля: CPU в ядрах, байты, длина очереди. Шкала
+/// 0..1 к ним неприменима, а нормировать по собственному min-max нельзя —
+/// амплитуда тогда ничего не значит. Поэтому масштаб приходит снаружи
+/// (`scale`), и вызывающий обязан назвать его в кадре рядом с дорожкой:
+/// «форма плюс подписанный пик» — измерение, а «форма сама по себе» — нет.
+#[must_use]
+pub fn scaled_lane(
+    points: &[(Timestamp, f64)],
+    width: usize,
+    window: (Timestamp, Timestamp),
+    scale: f64,
+    theme: &Theme,
+) -> String {
     if width == 0 {
         return String::new();
     }
@@ -289,6 +307,13 @@ pub fn ratio_lane(
         }
     }
 
+    // Нулевой или неположительный масштаб означает «сравнивать не с чем»:
+    // рисовать по нему уровни нельзя, иначе любая мелочь встанет в потолок.
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
     let mut out = String::with_capacity(width);
     for bucket in buckets {
         if spaced && !out.is_empty() {
@@ -296,8 +321,8 @@ pub fn ratio_lane(
         }
         match bucket {
             Some(value) => {
-                let level =
-                    ((value.clamp(0.0, 1.0) * last_index as f64).round() as usize).min(last_index);
+                let share = (value / scale).clamp(0.0, 1.0);
+                let level = ((share * last_index as f64).round() as usize).min(last_index);
                 out.push(blocks.get(level).copied().unwrap_or('_'));
             }
             None => out.push(gap),
@@ -532,6 +557,32 @@ mod tests {
         assert_eq!(unique.len(), 1, "постоянный ряд — ровная линия");
     }
 
+    /// Масштаб приходит снаружи: одна и та же форма при разном пике
+    /// обязана давать одинаковую картину, потому что амплитуда объясняется
+    /// подписанным пиком, а не сама собой.
+    #[test]
+    fn scaled_lane_normalises_by_the_given_scale() {
+        let t = theme();
+        let small = scaled_lane(&series(&[0.01, 0.02]), 8, window(&[0.01, 0.02]), 0.02, &t);
+        let large = scaled_lane(&series(&[2.0, 4.0]), 8, window(&[2.0, 4.0]), 4.0, &t);
+        assert_eq!(
+            small, large,
+            "форма зависит от отношения к масштабу, а не от абсолютных чисел"
+        );
+    }
+
+    /// Неположительный масштаб означает «сравнивать не с чем»: любая мелочь
+    /// не имеет права встать в потолок.
+    #[test]
+    fn scaled_lane_survives_zero_scale() {
+        let t = theme();
+        let top = *t.glyphs.blocks.last().expect("blocks");
+        let lane = scaled_lane(&series(&[0.001, 0.002]), 8, window(&[0.0, 1.0]), 0.0, &t);
+        assert!(
+            !lane.contains(top),
+            "нулевой масштаб не имеет права давать полную шкалу: {lane:?}"
+        );
+    }
     #[test]
     fn sparkline_ignores_nan_and_keeps_width() {
         let t = theme();

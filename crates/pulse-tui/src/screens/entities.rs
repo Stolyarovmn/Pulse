@@ -27,6 +27,7 @@ use super::{focused_section, rect, render_logical_table};
 /// по `m`. Логический показывает операционные объекты со свёрнутыми
 /// техническими частями, технический - полный инвентарь графа. Модель данных в
 /// обоих режимах одна: меняется только группировка.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -34,6 +35,7 @@ pub(crate) fn render(
     app: &mut App,
     plan: &LayoutPlan,
     theme: &Theme,
+    history: Option<&pulse_store::History>,
 ) {
     // Производный вид считается один раз на такт: и ввод, и отрисовка читают
     // один результат.
@@ -110,8 +112,8 @@ pub(crate) fn render(
             frame,
             rect(&halves, 0),
             rows,
-            selected,
-            app.pane == Pane::Primary,
+            (selected, app.pane == Pane::Primary),
+            &super::overview::TrendSource { snapshot, history },
             plan,
             theme,
         );
@@ -128,7 +130,15 @@ pub(crate) fn render(
             theme,
         );
     } else {
-        render_entity_list(frame, body, rows, selected, true, plan, theme);
+        render_entity_list(
+            frame,
+            body,
+            rows,
+            (selected, true),
+            &super::overview::TrendSource { snapshot, history },
+            plan,
+            theme,
+        );
     }
 }
 
@@ -136,11 +146,13 @@ fn render_entity_list(
     frame: &mut Frame<'_>,
     area: Rect,
     rows: &[LogicalRow],
-    selected: usize,
-    focused: bool,
+    // Курсор и фокус идут парой: у функции иначе восемь аргументов.
+    view: (usize, bool),
+    trend: &super::overview::TrendSource<'_>,
     plan: &LayoutPlan,
     theme: &Theme,
 ) {
+    let (selected, focused) = view;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(1)])
@@ -155,7 +167,7 @@ fn render_entity_list(
         )),
         rect(&chunks, 0),
     );
-    render_logical_table(frame, rect(&chunks, 1), rows, selected, theme);
+    render_logical_table(frame, rect(&chunks, 1), rows, selected, Some(trend), theme);
 }
 
 /// Панель инспектора: сводка, агрегированные связи, метки (раздел 128).
