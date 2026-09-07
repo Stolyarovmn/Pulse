@@ -79,7 +79,6 @@ pub fn of_series(
         .filter(|value| value.is_finite())
         .collect();
     let peak = values.iter().copied().fold(0.0_f64, f64::max);
-    let floor = values.iter().copied().fold(f64::MAX, f64::min);
     let mean = if values.is_empty() {
         0.0
     } else {
