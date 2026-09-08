@@ -180,12 +180,12 @@ fn audit_red_oldest_reflects_warm_retention() {
     );
 }
 
-/// RED-03 / PULSE-004, PULSE-044: историческое имя обязано сохраняться.
+/// PULSE-004 / PULSE-044 (PROMOTED): историческое имя обязано сохраняться.
 ///
-/// `Entities` перезаписывает запись целиком, поэтому `entities_at(A)` отдаёт
-/// метаданные последнего такта, а не наблюдавшиеся в момент A.
+/// Раньше `Entities` перезаписывал запись целиком, поэтому `entities_at(A)`
+/// отдавал метаданные последнего такта: diff сравнивал запись с самой собой
+/// и переименование не обнаруживал в принципе.
 #[test]
-#[ignore = "audit RED: PULSE-004/044 — promote when remediation lands"]
 fn audit_red_entities_at_returns_historical_name() {
     let mut feeder = Feeder::new();
     let _ = feeder.tick(|graph| {
@@ -211,10 +211,9 @@ fn audit_red_entities_at_returns_historical_name() {
     );
 }
 
-/// RED-04 / PULSE-004, PULSE-044: исторический родитель обязан сохраняться,
-/// иначе A/B diff не способен обнаружить reparent.
+/// PULSE-004 / PULSE-044 (PROMOTED): исторический родитель обязан
+/// сохраняться, иначе A/B diff не способен обнаружить reparent.
 #[test]
-#[ignore = "audit RED: PULSE-004/044 — promote when remediation lands"]
 fn audit_red_entities_at_returns_historical_parent() {
     let mut feeder = Feeder::new();
     let _ = feeder.tick(|graph| {

@@ -229,8 +229,10 @@ const WATCHED: &[MetricId] = pulse_core::metric::LONG_WINDOW;
 pub fn diff(history: &History, a: Timestamp, b: Timestamp, opts: &DiffOptions) -> DiffReport {
     let (a, b) = if a <= b { (a, b) } else { (b, a) };
 
-    let at_a: Vec<EntityRecord> = history.entities_at(a).into_iter().cloned().collect();
-    let at_b: Vec<EntityRecord> = history.entities_at(b).into_iter().cloned().collect();
+    // `entities_at` уже отдаёт владеющие записи с историческими
+    // метаданными: повторное клонирование не нужно.
+    let at_a: Vec<EntityRecord> = history.entities_at(a);
+    let at_b: Vec<EntityRecord> = history.entities_at(b);
     let map_a: HashMap<EntityId, &EntityRecord> = at_a.iter().map(|r| (r.id, r)).collect();
     let map_b: HashMap<EntityId, &EntityRecord> = at_b.iter().map(|r| (r.id, r)).collect();
 

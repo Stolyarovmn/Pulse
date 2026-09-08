@@ -3,16 +3,41 @@
 //! Запись живёт и после смерти сущности: именно она позволяет ответить на
 //! вопрос «что исчезло между A и B». Удаляется по горизонту истории или по
 //! жёсткому лимиту числа записей.
+//!
+//! Метаданные версионированы. Без этого `at(A)` отдавал метаданные
+//! последнего такта, и diff не мог обнаружить ни переименование, ни смену
+//! родителя: он сравнивал одну и ту же запись с самой собой. Темпоральный
+//! граф обязан отвечать «как это выглядело тогда», а не «как выглядит
+//! сейчас».
 
 use std::collections::HashMap;
 
-use pulse_core::entity::{EntityId, EntityKind, EntityRecord};
+use pulse_core::entity::{EntityId, EntityKind, EntityRecord, Labels};
 use pulse_core::time::Timestamp;
+
+/// Сколько версий метаданных хранится на сущность.
+///
+/// Предел обязателен: сущность с дрожащим именем иначе растит журнал без
+/// границы. При переполнении уходят самые старые версии, а запрос момента
+/// раньше сохранившейся истории отвечает самой ранней известной версией —
+/// это ближе к правде, чем текущее состояние.
+const MAX_VERSIONS: usize = 8;
+
+/// Версия изменяемых метаданных: как сущность выглядела с момента `at`.
+#[derive(Clone, Debug, PartialEq)]
+struct MetadataVersion {
+    at: Timestamp,
+    name: String,
+    parent: Option<EntityId>,
+    labels: Labels,
+}
 
 /// Журнал записей о сущностях.
 #[derive(Debug, Default)]
 pub struct Entities {
     records: HashMap<EntityId, EntityRecord>,
+    /// Версии метаданных по возрастанию времени.
+    versions: HashMap<EntityId, Vec<MetadataVersion>>,
     max_records: usize,
 }
 
@@ -21,12 +46,35 @@ impl Entities {
     pub fn new(max_records: usize) -> Self {
         Entities {
             records: HashMap::new(),
+            versions: HashMap::new(),
             max_records: max_records.max(16),
         }
     }
 
-    /// Обновляет или создаёт запись.
+    /// Обновляет или создаёт запись, сохраняя версию метаданных.
+    ///
+    /// Версия добавляется только при фактическом изменении имени, родителя
+    /// или метк: иначе журнал рос бы на каждый такт наблюдения.
     pub fn upsert(&mut self, record: EntityRecord) {
+        let version = MetadataVersion {
+            at: record.last_seen,
+            name: record.name.clone(),
+            parent: record.parent,
+            labels: record.labels.clone(),
+        };
+        let history = self.versions.entry(record.id).or_default();
+        let changed = history.last().is_none_or(|last| {
+            last.name != version.name
+                || last.parent != version.parent
+                || last.labels != version.labels
+        });
+        if changed {
+            history.push(version);
+            if history.len() > MAX_VERSIONS {
+                let _ = history.remove(0);
+            }
+        }
+
         match self.records.get_mut(&record.id) {
             Some(existing) => {
                 // `first_seen` не переписываем: он определяет начало жизни.
@@ -66,6 +114,9 @@ impl Entities {
             let excess = self.records.len().saturating_sub(self.max_records);
             for (id, _) in by_age.into_iter().take(excess) {
                 let _ = self.records.remove(&id);
+                // Версии живут ровно столько, сколько сама запись: иначе
+                // журнал версий переживал бы вытеснение и рос без границы.
+                let _ = self.versions.remove(&id);
             }
         }
     }
@@ -96,6 +147,7 @@ impl Entities {
                 break;
             }
             if self.records.remove(&id).is_some() {
+                let _ = self.versions.remove(&id);
                 count = count.saturating_add(1);
                 bytes = bytes.saturating_add(per_record);
             }
@@ -103,11 +155,19 @@ impl Entities {
         (count, bytes)
     }
 
-    /// Сущности, живые в момент `at`.
+    /// Сущности, живые в момент `at`, с метаданными **того** момента.
+    ///
+    /// Возвращает владеющие записи, а не ссылки: историческая версия
+    /// собирается из журнала версий и в таблице не хранится. Именно на этом
+    /// строится обнаружение переименования и смены родителя в A/B diff.
     #[must_use]
-    pub fn at(&self, at: Timestamp) -> Vec<&EntityRecord> {
-        let mut found: Vec<&EntityRecord> =
-            self.records.values().filter(|r| r.alive_at(at)).collect();
+    pub fn at(&self, at: Timestamp) -> Vec<EntityRecord> {
+        let mut found: Vec<EntityRecord> = self
+            .records
+            .values()
+            .filter(|record| record.alive_at(at))
+            .map(|record| self.as_of(record, at))
+            .collect();
         // Устойчивый порядок: результат diff не должен зависеть от обхода таблицы.
         found.sort_unstable_by(|a, b| {
             a.kind
@@ -117,6 +177,29 @@ impl Entities {
                 .then_with(|| a.id.as_u64().cmp(&b.id.as_u64()))
         });
         found
+    }
+
+    /// Запись в том виде, в котором она наблюдалась в момент `at`.
+    ///
+    /// Берётся последняя версия, чей момент не позже запрошенного. Если
+    /// история версий уже вытеснена (см. `MAX_VERSIONS`), отвечаем самой
+    /// ранней сохранившейся: она ближе к истине, чем текущее состояние.
+    fn as_of(&self, record: &EntityRecord, at: Timestamp) -> EntityRecord {
+        let mut restored = record.clone();
+        let Some(history) = self.versions.get(&record.id) else {
+            return restored;
+        };
+        let version = history
+            .iter()
+            .rev()
+            .find(|version| version.at <= at)
+            .or_else(|| history.first());
+        if let Some(version) = version {
+            restored.name = version.name.clone();
+            restored.parent = version.parent;
+            restored.labels = version.labels.clone();
+        }
+        restored
     }
 
     #[must_use]

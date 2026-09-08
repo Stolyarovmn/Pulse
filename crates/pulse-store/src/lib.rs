@@ -439,9 +439,12 @@ impl History {
             .map(|(_, aggregate)| aggregate.last)
     }
 
-    /// Сущности, живые в момент `at`.
+    /// Сущности, живые в момент `at`, с метаданными того момента.
+    ///
+    /// Записи владеющие: историческая версия имени, родителя и метк
+    /// собирается из журнала версий, а не хранится в таблице.
     #[must_use]
-    pub fn entities_at(&self, at: Timestamp) -> Vec<&EntityRecord> {
+    pub fn entities_at(&self, at: Timestamp) -> Vec<EntityRecord> {
         self.entities.at(at)
     }
 

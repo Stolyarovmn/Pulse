@@ -31,8 +31,8 @@
 | PULSE-002 / PULSE-048 | `audit_red_stale_value_is_not_current` | pulse-store | `значение без свежего наблюдения не имеет права возвращаться как текущее: Some(0.9)` | PROMOTED в PR-02 |
 | PULSE-010 / PULSE-035 | `audit_red_window_crossing_warm_and_hot_keeps_prefix` | pulse-store | `начало запрошенного окна обязано остаться в ответе, получено 32000 мс` | RED |
 | PULSE-038 | `audit_red_oldest_reflects_warm_retention` | pulse-store | `oldest обязан учитывать warm-слой, получено 32000 мс` | RED |
-| PULSE-004 / PULSE-044 | `audit_red_entities_at_returns_historical_name` | pulse-store | `left: "new-name", right: "old-name"` | RED |
-| PULSE-004 / PULSE-044 | `audit_red_entities_at_returns_historical_parent` | pulse-store | `left: EntityId(3g0), right: EntityId(1g0)` | RED |
+| PULSE-004 / PULSE-044 | `audit_red_entities_at_returns_historical_name` | pulse-store | `left: "new-name", right: "old-name"` | PROMOTED в PR-03 |
+| PULSE-004 / PULSE-044 | `audit_red_entities_at_returns_historical_parent` + `diff_detects_reparent_between_moments` | pulse-store, pulse-engine | `left: EntityId(3g0), right: EntityId(1g0)` | PROMOTED в PR-03 |
 | PULSE-003 / PULSE-045 | `audit_red_open_problem_survives_hysteresis_dead_zone` | pulse-engine | `в нейтральной зоне проблема обязана оставаться открытой` | RED |
 | PULSE-059 | `audit_red_problem_events_keep_entity_identity` | pulse-engine | `событие обязано указывать сущность графа: left: None, right: Some(EntityId(0g0))` | RED |
 | PULSE-084 | `audit_red_host_collector_reports_missing_critical_source` | pulse-collect | `отсутствие /proc/stat обязано быть заявлено как отказ сбора, получено Ok и 0 ошибок` | PROMOTED в PR-02 |
