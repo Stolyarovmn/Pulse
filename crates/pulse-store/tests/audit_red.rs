@@ -124,10 +124,10 @@ fn audit_red_stale_value_is_not_current() {
 /// RED-05 / PULSE-010, PULSE-035: окно, пересекающее warm и hot, обязано
 /// покрываться целиком.
 ///
-/// `History::series` возвращает hot-точки и обращается к warm только если
-/// hot пуст, поэтому warm-префикс запрошенного интервала теряется.
+/// Раньше `History::series` возвращал hot-точки и обращался к warm только
+/// если hot пуст, поэтому warm-префикс запрошенного интервала терялся:
+/// запрос на минуты отдавал последние секунды.
 #[test]
-#[ignore = "audit RED: PULSE-010/035 — promote when remediation lands"]
 fn audit_red_window_crossing_warm_and_hot_keeps_prefix() {
     let mut feeder = Feeder::new();
     let mut key = None;
@@ -158,12 +158,36 @@ fn audit_red_window_crossing_warm_and_hot_keeps_prefix() {
         oldest_point <= 6_000,
         "начало запрошенного окна обязано остаться в ответе, получено {oldest_point} мс"
     );
+    // Точки обязаны идти по возрастанию времени и не дублироваться на
+    // границе слоёв: одно наблюдение не имеет права попасть в ответ дважды.
+    let times: Vec<u64> = points.iter().map(|(at, _)| at.as_millis()).collect();
+    assert!(
+        times
+            .windows(2)
+            .all(|pair| matches!(pair, [earlier, later] if earlier < later)),
+        "склейка warm и hot обязана быть строго возрастающей: {times:?}"
+    );
+
+    // Статистика окна тоже обязана описывать весь интервал, а не хвост.
+    let stats = feeder
+        .history
+        .window(key, from, to)
+        .expect("окно вычислимо");
+    assert!(
+        stats.count >= times.len(),
+        "окно обязано учесть все наблюдения интервала: count={} точек={}",
+        stats.count,
+        times.len()
+    );
+    assert!(
+        stats.approximate,
+        "окно с warm-частью обязано быть помечено приближённым"
+    );
 }
 
-/// RED-15 / PULSE-038: `History::oldest` обязан отражать всю сохранённую
+/// PULSE-038 (PROMOTED): `History::oldest` обязан отражать всю сохранённую
 /// историю, включая warm-слой.
 #[test]
-#[ignore = "audit RED: PULSE-038 — promote when remediation lands"]
 fn audit_red_oldest_reflects_warm_retention() {
     let mut feeder = Feeder::new();
     for step in 0..40_u64 {

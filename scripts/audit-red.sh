@@ -28,8 +28,6 @@ reproducers=(
     "pulse-core audit_red_labels_are_terminal_safe PULSE-087"
     "pulse-core audit_red_reject_crit_below_warn PULSE-023"
     "pulse-core audit_red_reject_zero_operational_limits PULSE-081"
-    "pulse-store audit_red_window_crossing_warm_and_hot_keeps_prefix PULSE-010/035"
-    "pulse-store audit_red_oldest_reflects_warm_retention PULSE-038"
     "pulse-engine audit_red_open_problem_survives_hysteresis_dead_zone PULSE-003/045"
     "pulse-engine audit_red_problem_events_keep_entity_identity PULSE-059"
     "pulse-export audit_red_process_export_keeps_incarnation_identity PULSE-070"

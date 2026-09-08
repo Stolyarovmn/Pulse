@@ -314,19 +314,35 @@ impl History {
         latest
     }
 
-    /// Сырые точки серии в интервале.
+    /// Точки серии в интервале: warm-префикс плюс сырой hot-хвост.
+    ///
+    /// Раньше наличие хотя бы одной hot-точки отбрасывало весь warm-префикс,
+    /// поэтому запрос на десять минут возвращал только последние секунды:
+    /// окно из подписи и окно в ответе расходились, а A/B diff и длинные
+    /// окна анализа теряли начало интервала.
+    ///
+    /// Границей служит начало горячего кольца: warm-бакеты берутся строго
+    /// раньше него, иначе один и тот же такт попал бы в ответ дважды — как
+    /// среднее бакета и как сырая точка.
     #[must_use]
     pub fn series(&self, key: SeriesKey, from: Timestamp, to: Timestamp) -> Vec<(Timestamp, f64)> {
-        let points = self.hot.series_points(key, from, to);
-        if !points.is_empty() {
-            return points;
-        }
-        // Запрос за пределами горячего окна — отдаём средние по бакетам.
-        self.warm
-            .buckets_in(key, from, to)
+        let hot_points = self.hot.series_points(key, from, to);
+        let hot_start = self.hot.oldest();
+
+        let warm_to = match hot_start {
+            // Warm покрывает только то, чего нет в горячем кольце.
+            Some(start) if start > from => start.saturating_sub_millis(1).min(to),
+            Some(_) => return hot_points,
+            None => to,
+        };
+        let mut points: Vec<(Timestamp, f64)> = self
+            .warm
+            .buckets_in(key, from, warm_to)
             .into_iter()
             .filter_map(|(at, aggregate)| aggregate.mean().map(|mean| (at, mean)))
-            .collect()
+            .collect();
+        points.extend(hot_points);
+        points
     }
 
     /// Скорость counter-серии в интервале, единиц в секунду.
@@ -379,36 +395,72 @@ impl History {
         self.hot.series_points(key, from, to)
     }
 
-    /// Статистика значений серии в окне.
+    /// Статистика значений серии в окне: warm-часть плюс hot-часть.
+    ///
+    /// Раньше наличие любой hot-точки отбрасывало warm-часть, поэтому
+    /// статистика длинного окна считалась по его хвосту и занижала и
+    /// разброс, и минимум с максимумом.
+    ///
+    /// Если в ответ попала хотя бы одна warm-часть, статистика помечается
+    /// приближённой: разброс средних по бакетам систематически ниже разброса
+    /// сырых значений, потому что усреднение делит дисперсию, а суммы
+    /// квадратов внутри бакета не хранятся и восстановлению не подлежат.
+    /// Врать точностью нельзя.
     #[must_use]
     pub fn window(&self, key: SeriesKey, from: Timestamp, to: Timestamp) -> Option<WindowStats> {
-        let points = self.hot.series_points(key, from, to);
-        if !points.is_empty() {
-            return Some(welford(points.iter().map(|(_, v)| *v)));
+        let hot_points = self.hot.series_points(key, from, to);
+        let warm_to = match self.hot.oldest() {
+            Some(start) if start > from => Some(start.saturating_sub_millis(1).min(to)),
+            Some(_) => None,
+            None => Some(to),
+        };
+        let buckets =
+            warm_to.map_or_else(Vec::new, |warm_to| self.warm.buckets_in(key, from, warm_to));
+
+        if buckets.is_empty() {
+            if hot_points.is_empty() {
+                return None;
+            }
+            return Some(welford(hot_points.iter().map(|(_, v)| *v)));
         }
 
-        // Вне горячего окна сырых точек уже нет, есть только агрегаты бакетов.
-        let buckets = self.warm.buckets_in(key, from, to);
-        if buckets.is_empty() {
-            return None;
-        }
-        let mut stats = welford(buckets.iter().filter_map(|(_, a)| a.mean()));
         let merged = buckets
             .iter()
             .fold(Aggregate::empty(), |acc, (_, a)| acc.merge(a));
-        stats.count = usize::try_from(merged.count).unwrap_or(stats.count);
-        stats.min = merged.min;
-        stats.max = merged.max;
+        // Средние бакетов и сырые точки хвоста — один ряд: иначе окно снова
+        // описывало бы только часть интервала.
+        let values: Vec<f64> = buckets
+            .iter()
+            .filter_map(|(_, a)| a.mean())
+            .chain(hot_points.iter().map(|(_, v)| *v))
+            .collect();
+        let mut stats = welford(values.iter().copied());
+
+        // Точный счёт наблюдений и границы берутся из агрегатов: они знают,
+        // сколько сырых значений стояло за каждым бакетом.
+        let hot_count = hot_points.len();
+        stats.count = usize::try_from(merged.count)
+            .unwrap_or(stats.count)
+            .saturating_add(hot_count);
+        stats.min = merged.min.min(
+            hot_points
+                .iter()
+                .map(|(_, v)| *v)
+                .fold(f64::INFINITY, f64::min),
+        );
+        stats.max = merged.max.max(
+            hot_points
+                .iter()
+                .map(|(_, v)| *v)
+                .fold(f64::NEG_INFINITY, f64::max),
+        );
         stats.first = merged.first;
-        stats.last = merged.last;
-        if merged.count > 0 {
-            stats.mean = merged.sum / f64::from(merged.count);
+        stats.last = hot_points.last().map_or(merged.last, |(_, v)| *v);
+        let hot_sum: f64 = hot_points.iter().map(|(_, v)| *v).sum();
+        let total = f64::from(merged.count) + hot_count as f64;
+        if total > 0.0 {
+            stats.mean = (merged.sum + hot_sum) / total;
         }
-        // Разброс средних по бакетам систематически ниже разброса сырых
-        // значений: усреднение делит дисперсию на число наблюдений, а суммы
-        // квадратов внутри бакета не хранятся и восстановлению не подлежат.
-        // Врать точностью нельзя: помечаем статистику приближённой, и
-        // потребитель переключается на относительное изменение.
         stats.approximate = true;
         Some(stats)
     }
@@ -463,10 +515,20 @@ impl History {
         self.events.recent(limit)
     }
 
-    /// Начало горячего окна.
+    /// Начало сохранённой истории: warm-слой, а при его отсутствии горячее
+    /// кольцо.
+    ///
+    /// Раньше возвращалось только начало горячего кольца, поэтому проверка
+    /// «запрошенный интервал доступен» отклоняла моменты, которые история
+    /// на самом деле помнила.
     #[must_use]
     pub fn oldest(&self) -> Timestamp {
-        self.hot.oldest().unwrap_or(Timestamp::ZERO)
+        match (self.warm.oldest(), self.hot.oldest()) {
+            (Some(warm), Some(hot)) => warm.min(hot),
+            (Some(warm), None) => warm,
+            (None, Some(hot)) => hot,
+            (None, None) => Timestamp::ZERO,
+        }
     }
 
     /// Время последнего такта.

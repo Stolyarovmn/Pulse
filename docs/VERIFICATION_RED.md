@@ -29,8 +29,8 @@
 | PULSE-023 | `audit_red_reject_crit_below_warn` | pulse-core | `порог crit ниже warn обязан быть отклонён, получено: Ok(())` | RED |
 | PULSE-081 | `audit_red_reject_zero_operational_limits` | pulse-core | `нулевые лимиты обязаны отклоняться, приняты: ["export.rate_limit_per_minute", "export.max_series", "store.max_series"]` | RED |
 | PULSE-002 / PULSE-048 | `audit_red_stale_value_is_not_current` | pulse-store | `значение без свежего наблюдения не имеет права возвращаться как текущее: Some(0.9)` | PROMOTED в PR-02 |
-| PULSE-010 / PULSE-035 | `audit_red_window_crossing_warm_and_hot_keeps_prefix` | pulse-store | `начало запрошенного окна обязано остаться в ответе, получено 32000 мс` | RED |
-| PULSE-038 | `audit_red_oldest_reflects_warm_retention` | pulse-store | `oldest обязан учитывать warm-слой, получено 32000 мс` | RED |
+| PULSE-010 / PULSE-035 | `audit_red_window_crossing_warm_and_hot_keeps_prefix` | pulse-store | `начало запрошенного окна обязано остаться в ответе, получено 32000 мс` | PROMOTED в PR-04 |
+| PULSE-038 | `audit_red_oldest_reflects_warm_retention` | pulse-store | `oldest обязан учитывать warm-слой, получено 32000 мс` | PROMOTED в PR-04 |
 | PULSE-004 / PULSE-044 | `audit_red_entities_at_returns_historical_name` | pulse-store | `left: "new-name", right: "old-name"` | PROMOTED в PR-03 |
 | PULSE-004 / PULSE-044 | `audit_red_entities_at_returns_historical_parent` + `diff_detects_reparent_between_moments` | pulse-store, pulse-engine | `left: EntityId(3g0), right: EntityId(1g0)` | PROMOTED в PR-03 |
 | PULSE-003 / PULSE-045 | `audit_red_open_problem_survives_hysteresis_dead_zone` | pulse-engine | `в нейтральной зоне проблема обязана оставаться открытой` | RED |

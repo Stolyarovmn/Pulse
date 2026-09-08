@@ -116,6 +116,21 @@ impl Warm {
             .collect()
     }
 
+    /// Момент начала самого раннего сохранённого бакета.
+    ///
+    /// Нужен, чтобы история могла честно назвать свою глубину: без этого
+    /// `oldest` описывал только горячее кольцо и занижал доступный интервал
+    /// в десятки раз.
+    #[must_use]
+    pub fn oldest(&self) -> Option<Timestamp> {
+        let earliest = self
+            .series
+            .values()
+            .filter_map(|buckets| buckets.front().map(|(bucket, _)| *bucket))
+            .min()?;
+        self.bucket_start.get(&earliest).copied()
+    }
+
     #[must_use]
     pub fn series_count(&self) -> usize {
         self.series.len()
