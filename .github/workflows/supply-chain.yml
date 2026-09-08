@@ -1,0 +1,46 @@
+name: supply-chain
+
+# Обязательный CI проверяет только код. Аудит показал, что этого мало:
+# в графе зависимостей оказалась версия с advisory (`lru 0.12.5` через
+# `ratatui`), и обнаружить это было нечем. Гейт вынесен отдельно, чтобы
+# advisory базы обновлялись по расписанию и не делали сборку кода
+# недетерминированной.
+on:
+  push:
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'crates/*/Cargo.toml'
+      - '.github/workflows/supply-chain.yml'
+  pull_request:
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'crates/*/Cargo.toml'
+  schedule:
+    # Advisory появляются независимо от изменений в коде.
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.85.1'
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --version ^0.21
+      # Без `--ignore`: подавление advisory возвращает нас в исходное
+      # состояние, где уязвимая версия невидима. Известные исключения
+      # фиксируются в docs/SECURITY.md с обоснованием, а не флагом.
+      - name: Advisories
+        run: cargo audit --deny warnings
+      - name: Duplicate dependencies
+        run: cargo tree --duplicates --locked

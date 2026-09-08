@@ -40,6 +40,10 @@ signal-hook = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 
+# Test-only: property-тесты инвариантов. В граф зависимостей релизного
+# бинарника не входит — подключается только как dev-dependency.
+proptest = "1"
+
 [workspace.lints.rust]
 unsafe_code = "deny"
 missing_debug_implementations = "warn"

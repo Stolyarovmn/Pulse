@@ -7,21 +7,33 @@ on:
 permissions:
   contents: read
 
+env:
+  # Property-тесты должны быть детерминированно ограничены: без этого число
+  # случаев зависит от окружения, и «зелёный» CI перестаёт быть сравнимым.
+  PROPTEST_CASES: 256
+
 jobs:
   test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+      # Точная версия, а не `1.85`: заявленный MSRV обязан проверяться именно
+      # тем компилятором, который назван в rust-version, иначе граф
+      # зависимостей может тихо потребовать новее.
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: '1.85'
+          toolchain: '1.85.1'
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Formatting
         run: cargo fmt --all -- --check
+      # `--locked` во всех шагах: CI не имеет права молча обновлять lockfile,
+      # иначе проверка идёт не на том графе зависимостей, что у релиза.
+      - name: Check
+        run: cargo check --workspace --all-targets --locked
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Tests
         run: cargo test --workspace --locked
       - name: Release build

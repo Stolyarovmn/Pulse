@@ -34,6 +34,8 @@ pub mod host;
 pub mod net;
 pub mod parse;
 pub mod process;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 use std::path::Path;
 use std::sync::Arc;

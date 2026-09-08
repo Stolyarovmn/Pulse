@@ -126,7 +126,7 @@ fn key_cell<'a>(key: &str, meaning: &str, cell: usize, theme: &'a Theme) -> Vec<
 }
 
 /// Одна ячейка алфавита: символ своим цветом и его смысл.
-fn alphabet_cell<'a>(class: StateClass, theme: &'a Theme) -> Vec<Span<'a>> {
+fn alphabet_cell(class: StateClass, theme: &Theme) -> Vec<Span<'_>> {
     vec![
         Span::styled(
             format!("{:<3}", class.symbol(theme.capability)),

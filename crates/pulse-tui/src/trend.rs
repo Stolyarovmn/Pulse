@@ -208,4 +208,44 @@ mod tests {
             "рост обязан доходить до пика окна: {lane:?}"
         );
     }
+
+    /// Полная связка `History → of_series` обязана сохранить решение о
+    /// ровном ряде. Чистый тест `lane_of` защищает алгоритм, а этот —
+    /// интеграцию с горячим кольцом и реальным окном снимка.
+    #[test]
+    fn flat_history_stays_flat_through_of_series() {
+        use pulse_core::config::Store as StoreConfig;
+        use pulse_core::sample::Sample;
+        use pulse_core::time::TickId;
+
+        let mut snapshot = Snapshot::default();
+        snapshot.at = Timestamp::from_millis(10_000);
+        let key = SeriesKey::new(snapshot.host, pulse_core::metric::ids::HOST_CPU_UTIL);
+        let mut history = pulse_store::History::new(&StoreConfig::default());
+        for tick in 1..=10_u64 {
+            history.ingest(&pulse_core::graph::TickBatch {
+                tick: TickId(tick),
+                at: Timestamp::from_millis(tick * 1_000),
+                samples: vec![Sample {
+                    series: key,
+                    value: 0.03,
+                }],
+                events: Vec::new(),
+                records: Vec::new(),
+                alive: vec![snapshot.host],
+            });
+        }
+
+        let theme = Theme::with_capability(Capability::TrueColor);
+        let trend =
+            of_series(Some(&history), &snapshot, key, 12, &theme).expect("история подключена");
+        assert!(trend.is_measured());
+        assert_eq!(trend.peak, 0.03);
+        assert!((trend.mean - 0.03).abs() < f64::EPSILON);
+        assert!(
+            trend.lane.chars().all(|symbol| symbol == '─'),
+            "ровный ряд из History обязан остаться ровным: {:?}",
+            trend.lane
+        );
+    }
 }

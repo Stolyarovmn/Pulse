@@ -102,6 +102,9 @@ cgroup 90..=149, process 150..=189, agent 190..=219).
 | Колонка тренда в строках таблиц: форма CPU за минуту, масштаб — пик окна, пик и среднее в панели выбранного; ровный ряд рисуется ровной линией, отсутствие истории названо `collecting`; колонка уходит первой при сужении | `pulse-tui/src/trend.rs` (`lane_of`, `of_series`), `pulse-tui/src/table.rs` (`TREND`), `pulse-tui/src/screens/overview.rs` (`trend_cell`) | реализовано |
 | Тема: 3 тирса терминала (truecolor/256/16), ASCII-fallback | `src/theme.rs`, `src/capability.rs` | реализовано |
 | Детерминированная приёмка (§194/§197): сценарий ввода → ожидаемая картина | `src/screens/acceptance.rs` | реализовано |
+| Инфраструктура проверки аудита: `CountingFs` считает фактические чтения, `ScriptedFs` детерминированно меняет ответ по пути между вызовами, property-тесты закрепляют санитайзер, арифметику времени и отсев не-finite значений | `pulse-collect/src/test_support.rs`, `pulse-core/tests/properties.rs`, `pulse-store/tests/properties.rs` | реализовано |
+| RED-репродьюсеры находок аудита: 13 дефектов зафиксированы падающими тестами под `#[ignore]`, `scripts/audit-red.sh` требует продвижения теста при исправлении дефекта | `crates/*/tests/audit_red.rs`, `scripts/audit-red.sh`, `docs/VERIFICATION_RED.md` | реализовано |
+| Детерминированный обязательный CI: точный toolchain 1.85.1, все шаги с `--locked`, `PROPTEST_CASES` задан; отдельный гейт advisory и дубликатов зависимостей | `.github/workflows/ci.yml`, `.github/workflows/supply-chain.yml`, `scripts/wsl-verify.sh` | реализовано |
 
 ## 7. CLI (`crates/pulse-cli`)
 

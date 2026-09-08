@@ -421,7 +421,7 @@ impl Config {
             ("disk_await_crit_ms", r.disk_await_crit_ms),
             ("disk_await_clear_ms", r.disk_await_clear_ms),
         ] {
-            if !value.is_finite() || value < 0.0 || value > 600_000.0 {
+            if !value.is_finite() || !(0.0..=600_000.0).contains(&value) {
                 return Err(ConfigError::Threshold {
                     name,
                     value,

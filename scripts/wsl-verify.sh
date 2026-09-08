@@ -35,11 +35,17 @@ fi
 step "cargo fmt --all -- --check"
 bash "$cargo_sh" fmt --all -- --check
 
-step "cargo clippy --workspace --all-targets -- -D warnings"
-bash "$cargo_sh" clippy --workspace --all-targets -- -D warnings
+# Ниже всё с `--locked` и в том же порядке, что в .github/workflows/ci.yml:
+# локальная проверка обязана совпадать с обязательным CI, иначе расхождение
+# lockfile или порядка шагов даёт «у меня работало».
+step "cargo check --workspace --all-targets --locked"
+bash "$cargo_sh" check --workspace --all-targets --locked
 
-step "cargo test --workspace"
-bash "$cargo_sh" test --workspace
+step "cargo clippy --workspace --all-targets --locked -- -D warnings"
+bash "$cargo_sh" clippy --workspace --all-targets --locked -- -D warnings
+
+step "cargo test --workspace --locked"
+bash "$cargo_sh" test --workspace --locked
 
 # Потеря терминала под работающим интерфейсом. Тест на pty её не
 # воспроизводит: процесс выходит сам. Живой дефект «100% ядра и игнор kill»
