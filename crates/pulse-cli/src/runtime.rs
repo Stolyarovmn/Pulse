@@ -214,7 +214,14 @@ fn collect_loop(
         }
 
         let mut batch = graph.end_tick();
-        let mut latest = with_history_read(&history, History::latest);
+        // Окно свежести — два интервала: одно наблюдение на такт плюс запас
+        // на дрожание расписания. Наблюдение старше этого окна перестаёт
+        // считаться текущим, и правило видит «не измерено», а не последнее
+        // удачное значение исчезнувшего источника.
+        let stale_after_ms = interval.as_millis().saturating_mul(2);
+        let stale_after_ms = u64::try_from(stale_after_ms).unwrap_or(u64::MAX);
+        let mut latest =
+            with_history_read(&history, History::latest).with_freshness(now, stale_after_ms);
         for sample in &batch.samples {
             latest.set(sample.series, sample.value);
         }

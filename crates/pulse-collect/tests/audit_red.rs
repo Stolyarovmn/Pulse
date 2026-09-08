@@ -13,14 +13,13 @@ use pulse_collect::HostCollector;
 use pulse_core::time::Timestamp;
 use pulse_core::{CollectCtx, Collector, EntityGraph};
 
-/// RED-11 / PULSE-084: потеря критического источника обязана быть заявлена.
+/// PULSE-084 (PROMOTED): потеря критического источника обязана быть заявлена.
 ///
-/// Внутренние методы `HostCollector` при отсутствии файла просто выходят, а
-/// `collect` всегда возвращает `Ok(())`. Значит исчезновение `/proc/stat`
-/// не увеличивает счётчик ошибок и не порождает события: агент выглядит
-/// здоровым, будучи ослепшим.
+/// `/proc/stat` и `/proc/meminfo` — основа наблюдения за хостом. Раньше
+/// внутренние методы при отсутствии файла просто выходили, а `collect`
+/// всегда возвращал `Ok(())`: агент мог ослепнуть, не увеличив ни одного
+/// счётчика ошибок и не породив ни одного события.
 #[test]
-#[ignore = "audit RED: PULSE-084 — promote when remediation lands"]
 fn audit_red_host_collector_reports_missing_critical_source() {
     // Всё на месте, кроме `/proc/stat`.
     let fs: Arc<dyn FsSource> = Arc::new(

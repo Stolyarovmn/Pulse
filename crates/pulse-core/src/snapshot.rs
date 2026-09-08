@@ -28,10 +28,32 @@ pub const RECENT_CHANGES_BUDGET: usize = 8;
 /// без блокировки потока сбора: реализация в `pulse-cli` построена на `ArcSwap`.
 pub type SnapshotSource = std::sync::Arc<dyn Fn() -> std::sync::Arc<Snapshot> + Send + Sync>;
 
-/// Последние значения серий.
+/// Одно наблюдение: значение и момент, когда его действительно измерили.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Observation {
+    pub value: f64,
+    pub at: Timestamp,
+}
+
+/// Последние значения серий вместе со свежестью наблюдения.
+///
+/// Момент наблюдения обязателен, а не удобен. Раньше хранилось только
+/// `SeriesKey → f64`, поэтому исчезновение источника выглядело как
+/// неизменное значение: коллектор не смог прочитать `/proc/diskstats`, а
+/// кадр и правила продолжали видеть последнее удачное измерение как
+/// текущее. «Не наблюдали» и «столько же, сколько было» — разные
+/// утверждения, и различать их обязано хранилище значений, а не каждый
+/// вызывающий.
 #[derive(Clone, Debug, Default)]
 pub struct LatestValues {
-    values: HashMap<SeriesKey, f64>,
+    values: HashMap<SeriesKey, Observation>,
+    /// Момент кадра: относительно него считается устаревание.
+    as_of: Timestamp,
+    /// Возраст, после которого наблюдение больше не считается текущим.
+    ///
+    /// `None` — проверка выключена: так работают модульные тесты и вызовы,
+    /// которые сами наполняют набор значениями текущего такта.
+    stale_after_ms: Option<u64>,
 }
 
 impl LatestValues {
@@ -40,18 +62,69 @@ impl LatestValues {
         LatestValues::default()
     }
 
-    pub fn set(&mut self, series: SeriesKey, value: f64) {
-        self.values.insert(series, value);
+    /// Задаёт момент кадра и допустимый возраст наблюдения.
+    ///
+    /// Допуск нужен из-за нормальной работы: значение приходит раз в такт,
+    /// поэтому «свежим» обязано считаться и наблюдение предыдущего такта,
+    /// иначе каждый кадр объявлял бы половину метрик пропавшими.
+    #[must_use]
+    pub fn with_freshness(mut self, as_of: Timestamp, stale_after_ms: u64) -> Self {
+        self.as_of = as_of;
+        self.stale_after_ms = Some(stale_after_ms);
+        self
     }
 
+    /// Значение, наблюдённое в момент кадра.
+    pub fn set(&mut self, series: SeriesKey, value: f64) {
+        let at = self.as_of;
+        self.values.insert(series, Observation { value, at });
+    }
+
+    /// Значение с явным моментом наблюдения.
+    pub fn set_observed(&mut self, series: SeriesKey, value: f64, at: Timestamp) {
+        self.values.insert(series, Observation { value, at });
+    }
+
+    /// Текущее значение: только если наблюдение не устарело.
     #[must_use]
     pub fn get(&self, entity: EntityId, metric: MetricId) -> Option<f64> {
-        self.values.get(&SeriesKey::new(entity, metric)).copied()
+        let observation = self.values.get(&SeriesKey::new(entity, metric))?;
+        match self.stale_after_ms {
+            Some(limit) if self.age_ms(observation.at) > limit => None,
+            _ => Some(observation.value),
+        }
     }
 
     #[must_use]
     pub fn get_or(&self, entity: EntityId, metric: MetricId, default: f64) -> f64 {
         self.get(entity, metric).unwrap_or(default)
+    }
+
+    /// Момент последнего наблюдения серии, даже если оно устарело.
+    ///
+    /// Нужен интерфейсу и диагностике: «последний раз видели минуту назад»
+    /// информативнее, чем просто отсутствие значения.
+    #[must_use]
+    pub fn observed_at(&self, entity: EntityId, metric: MetricId) -> Option<Timestamp> {
+        self.values
+            .get(&SeriesKey::new(entity, metric))
+            .map(|observation| observation.at)
+    }
+
+    /// Серия наблюдалась, но наблюдение больше не считается текущим.
+    #[must_use]
+    pub fn is_stale(&self, entity: EntityId, metric: MetricId) -> bool {
+        let Some(observation) = self.values.get(&SeriesKey::new(entity, metric)) else {
+            return false;
+        };
+        match self.stale_after_ms {
+            Some(limit) => self.age_ms(observation.at) > limit,
+            None => false,
+        }
+    }
+
+    fn age_ms(&self, at: Timestamp) -> u64 {
+        self.as_of.as_millis().saturating_sub(at.as_millis())
     }
 
     #[must_use]
@@ -64,8 +137,15 @@ impl LatestValues {
         self.values.is_empty()
     }
 
+    /// Пары «серия — текущее значение». Устаревшие наблюдения не выдаются:
+    /// иначе экспортёр отдал бы их как актуальные.
     pub fn iter(&self) -> impl Iterator<Item = (SeriesKey, f64)> + '_ {
-        self.values.iter().map(|(k, v)| (*k, *v))
+        self.values
+            .iter()
+            .filter_map(|(key, observation)| match self.stale_after_ms {
+                Some(limit) if self.age_ms(observation.at) > limit => None,
+                _ => Some((*key, observation.value)),
+            })
     }
 
     pub fn retain_entities(&mut self, keep: &dyn Fn(EntityId) -> bool) {

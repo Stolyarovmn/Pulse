@@ -41,9 +41,13 @@ impl HostCollector {
     }
 
     /// CPU: сырой счётчик и доли по режимам из разности с прошлым тактом.
-    fn collect_cpu(&mut self, ctx: &mut CollectCtx<'_>) {
+    ///
+    /// Возвращает `false`, если источник не прочитан: `/proc/stat` — не
+    /// опциональная подсистема, а основа наблюдения за хостом, и его потеря
+    /// обязана быть заявлена наружу, а не выглядеть удачным тактом.
+    fn collect_cpu(&mut self, ctx: &mut CollectCtx<'_>) -> bool {
         let Some(text) = self.read("stat") else {
-            return;
+            return false;
         };
         let host = ctx.host();
 
@@ -98,11 +102,14 @@ impl HostCollector {
                 ctx.sample(host, metric, value);
             }
         }
+        true
     }
 
-    fn collect_memory(&self, ctx: &mut CollectCtx<'_>) {
+    /// Память хоста. `false` — `/proc/meminfo` недоступен: это второй
+    /// критический источник, без которого хост не наблюдается.
+    fn collect_memory(&self, ctx: &mut CollectCtx<'_>) -> bool {
         let Some(text) = self.read("meminfo") else {
-            return;
+            return false;
         };
         let host = ctx.host();
         let total = parse::field(&text, "MemTotal").unwrap_or(0.0);
@@ -128,6 +135,7 @@ impl HostCollector {
             ctx.sample(host, ids::HOST_MEM_USED, used);
             ctx.sample(host, ids::HOST_MEM_UTIL, (used / total).clamp(0.0, 1.0));
         }
+        true
     }
 
     fn collect_pressure(&self, ctx: &mut CollectCtx<'_>) {
@@ -273,12 +281,33 @@ impl Collector for HostCollector {
     }
 
     fn collect(&mut self, ctx: &mut CollectCtx<'_>) -> Result<(), CollectError> {
-        self.collect_cpu(ctx);
-        self.collect_memory(ctx);
+        // Разделение обязательное. `/proc/stat` и `/proc/meminfo` — основа
+        // наблюдения за хостом: без них CPU и память вообще не измеряются,
+        // и такт нельзя считать удачным. Давление, файловые дескрипторы и
+        // счётчики процессов опциональны — подсистема может быть выключена
+        // в ядре, и это не отказ сбора.
+        //
+        // Раньше все методы молча выходили, а `collect` всегда возвращал
+        // `Ok(())`: агент мог ослепнуть, не увеличив ни одного счётчика
+        // ошибок и не породив ни одного события.
+        let cpu = self.collect_cpu(ctx);
+        let memory = self.collect_memory(ctx);
         self.collect_pressure(ctx);
         self.collect_misc(ctx);
         self.collect_process_counts(ctx);
-        Ok(())
+
+        match (cpu, memory) {
+            (true, true) => Ok(()),
+            (false, false) => Err(CollectError::Unavailable(
+                "не читаются ни /proc/stat, ни /proc/meminfo",
+            )),
+            (false, true) => Err(CollectError::Unavailable(
+                "не читается /proc/stat: метрики CPU хоста не собраны",
+            )),
+            (true, false) => Err(CollectError::Unavailable(
+                "не читается /proc/meminfo: метрики памяти хоста не собраны",
+            )),
+        }
     }
 }
 

@@ -21,22 +21,21 @@ cargo_sh="$repo_root/scripts/wsl-cargo.sh"
 filter="${1:-}"
 
 # Крейт и точное имя теста. Список ведётся вместе с docs/VERIFICATION_RED.md.
+# Продвинутые тесты (дефект исправлен) здесь не перечисляются: они уходят
+# в обязательный набор.
 reproducers=(
     "pulse-core audit_red_labels_truncate_on_char_boundary PULSE-007/043"
     "pulse-core audit_red_labels_are_terminal_safe PULSE-087"
     "pulse-core audit_red_reject_crit_below_warn PULSE-023"
     "pulse-core audit_red_reject_zero_operational_limits PULSE-081"
-    "pulse-store audit_red_stale_value_is_not_current PULSE-002/048"
     "pulse-store audit_red_window_crossing_warm_and_hot_keeps_prefix PULSE-010/035"
     "pulse-store audit_red_oldest_reflects_warm_retention PULSE-038"
     "pulse-store audit_red_entities_at_returns_historical_name PULSE-004/044"
     "pulse-store audit_red_entities_at_returns_historical_parent PULSE-004/044"
     "pulse-engine audit_red_open_problem_survives_hysteresis_dead_zone PULSE-003/045"
     "pulse-engine audit_red_problem_events_keep_entity_identity PULSE-059"
-    "pulse-collect audit_red_host_collector_reports_missing_critical_source PULSE-084"
     "pulse-export audit_red_process_export_keeps_incarnation_identity PULSE-070"
 )
-
 expected_red=0
 unexpected_green=0
 broken=0

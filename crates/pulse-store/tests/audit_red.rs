@@ -61,13 +61,14 @@ fn cgroup(name: &str, id: u64) -> EntitySpec {
     EntitySpec::new(EntityKey::Cgroup { cgroup_id: id }, name)
 }
 
-/// RED-02 / PULSE-002, PULSE-048: значение, которое перестали наблюдать,
+/// PULSE-002 / PULSE-048 (PROMOTED): значение, которое перестали наблюдать,
 /// не имеет права выглядеть текущим.
 ///
-/// `LatestValues` хранит только `SeriesKey → f64` без момента наблюдения,
-/// поэтому исчезновение источника выглядит как неизменное значение.
+/// История сообщает момент наблюдения каждой серии, а окно свежести задаёт
+/// вызывающий: оно зависит от интервала сбора, о котором история не решает.
+/// Раньше `LatestValues` хранил только `SeriesKey → f64`, поэтому
+/// исчезновение источника выглядело как неизменное значение.
 #[test]
-#[ignore = "audit RED: PULSE-002/048 — promote when remediation lands"]
 fn audit_red_stale_value_is_not_current() {
     let mut feeder = Feeder::new();
     let _ = feeder.tick(|graph| {
@@ -81,6 +82,12 @@ fn audit_red_stale_value_is_not_current() {
         .find(|record| record.name == "api.service")
         .map(|record| record.id)
         .expect("сущность наблюдалась");
+    let observed_at = feeder.at();
+
+    // Пока наблюдение свежее, значение обязано быть видно.
+    let fresh = feeder.history.latest().with_freshness(feeder.at(), 2_000);
+    assert_eq!(fresh.get(entity, ids::CG_MEM_UTIL), Some(0.9));
+    assert!(!fresh.is_stale(entity, ids::CG_MEM_UTIL));
 
     // Сущность жива, но метрику больше не собирают: источник исчез.
     for _ in 0..5 {
@@ -89,11 +96,28 @@ fn audit_red_stale_value_is_not_current() {
         });
     }
 
-    let latest = feeder.history.latest();
+    let latest = feeder.history.latest().with_freshness(feeder.at(), 2_000);
     assert!(
         latest.get(entity, ids::CG_MEM_UTIL).is_none(),
         "значение без свежего наблюдения не имеет права возвращаться как текущее: {:?}",
         latest.get(entity, ids::CG_MEM_UTIL)
+    );
+    assert!(
+        latest.is_stale(entity, ids::CG_MEM_UTIL),
+        "серия обязана быть названа устаревшей, а не просто отсутствующей"
+    );
+    assert_eq!(
+        latest.observed_at(entity, ids::CG_MEM_UTIL),
+        Some(observed_at),
+        "момент последнего наблюдения обязан сохраняться для диагностики"
+    );
+    // Устаревшее наблюдение не имеет права утечь через перебор серий:
+    // экспортёр отдал бы его как актуальное.
+    assert!(
+        !latest
+            .iter()
+            .any(|(key, _)| key.metric == ids::CG_MEM_UTIL && key.entity == entity),
+        "перебор обязан пропускать устаревшие наблюдения"
     );
 }
 

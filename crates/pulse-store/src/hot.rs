@@ -181,11 +181,17 @@ impl Hot {
         self.series.keys().copied()
     }
 
-    /// Последние значения всех серий.
-    pub fn latest_pairs(&self) -> impl Iterator<Item = (SeriesKey, f64)> + '_ {
-        self.series
-            .iter()
-            .filter_map(|(key, points)| points.back().map(|(_, v)| (*key, *v)))
+    /// Последние значения всех серий вместе с моментом наблюдения.
+    ///
+    /// Момент обязателен: получатель должен отличать «наблюдали только что»
+    /// от «последний раз видели много тактов назад», иначе устаревшее
+    /// значение выглядит текущим.
+    pub fn latest_pairs(&self) -> impl Iterator<Item = (SeriesKey, f64, Timestamp)> + '_ {
+        self.series.iter().filter_map(|(key, points)| {
+            let (seq, value) = points.back()?;
+            let at = self.tick_time(*seq)?;
+            Some((*key, *value, at))
+        })
     }
 
     #[must_use]

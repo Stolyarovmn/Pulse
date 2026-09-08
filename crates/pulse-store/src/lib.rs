@@ -300,12 +300,16 @@ impl History {
         u64::from(self.ceiling_warned)
     }
 
-    /// Последние значения всех серий.
+    /// Последние значения всех серий с их моментами наблюдения.
+    ///
+    /// Окно свежести задаёт вызывающий (`with_freshness`), потому что оно
+    /// зависит от интервала сбора, а история о нём не решает. Сама история
+    /// обязана сообщить факт: когда значение измерили.
     #[must_use]
     pub fn latest(&self) -> LatestValues {
         let mut latest = LatestValues::new();
-        for (key, value) in self.hot.latest_pairs() {
-            latest.set(key, value);
+        for (key, value, at) in self.hot.latest_pairs() {
+            latest.set_observed(key, value, at);
         }
         latest
     }
