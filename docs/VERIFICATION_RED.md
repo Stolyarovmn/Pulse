@@ -33,8 +33,8 @@
 | PULSE-038 | `audit_red_oldest_reflects_warm_retention` | pulse-store | `oldest обязан учитывать warm-слой, получено 32000 мс` | PROMOTED в PR-04 |
 | PULSE-004 / PULSE-044 | `audit_red_entities_at_returns_historical_name` | pulse-store | `left: "new-name", right: "old-name"` | PROMOTED в PR-03 |
 | PULSE-004 / PULSE-044 | `audit_red_entities_at_returns_historical_parent` + `diff_detects_reparent_between_moments` | pulse-store, pulse-engine | `left: EntityId(3g0), right: EntityId(1g0)` | PROMOTED в PR-03 |
-| PULSE-003 / PULSE-045 | `audit_red_open_problem_survives_hysteresis_dead_zone` | pulse-engine | `в нейтральной зоне проблема обязана оставаться открытой` | RED |
-| PULSE-059 | `audit_red_problem_events_keep_entity_identity` | pulse-engine | `событие обязано указывать сущность графа: left: None, right: Some(EntityId(0g0))` | RED |
+| PULSE-003 / PULSE-045 | `audit_red_open_problem_survives_hysteresis_dead_zone` | pulse-engine | `в нейтральной зоне проблема обязана оставаться открытой` | PROMOTED в PR-05 |
+| PULSE-059 | `audit_red_problem_events_keep_entity_identity` | pulse-engine | `событие обязано указывать сущность графа: left: None, right: Some(EntityId(0g0))` | PROMOTED в PR-05 |
 | PULSE-084 | `audit_red_host_collector_reports_missing_critical_source` | pulse-collect | `отсутствие /proc/stat обязано быть заявлено как отказ сбора, получено Ok и 0 ошибок` | PROMOTED в PR-02 |
 | PULSE-070 | `audit_red_process_export_keeps_incarnation_identity` | pulse-export | `идентичность ряда обязана включать start_ticks: ["pulse_process_cpu_cores{pid=\"123\"}", "pulse_process_cpu_cores{pid=\"123\"}"]` | RED |
 | PULSE-039 | `audit_red_counter_rate_through_warm_layer` | pulse-store | — | UNEXPECTED_GREEN → PROMOTED |

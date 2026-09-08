@@ -4,7 +4,7 @@
 //! настраивается один раз для всех правил, а правило остаётся чистой функцией
 //! «значение → решение», которую легко тестировать.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use pulse_core::config::Rules as RulesCfg;
 use pulse_core::event::{Event, EventKind};
@@ -23,6 +23,16 @@ struct State {
     since: Timestamp,
     streak: u32,
     last_seen: Timestamp,
+    /// Последняя материализованная проблема, пока гистерезис открыт.
+    ///
+    /// Обязательна, потому что правило не выдаёт попадание в нейтральной
+    /// зоне: значение уже ниже порога входа, но ещё выше условия снятия.
+    /// Раньше список проблем строился только из попаданий текущего такта,
+    /// поэтому открытая проблема исчезала из снимка, хотя внутреннее
+    /// состояние оставалось открытым и события о закрытии не было. Для
+    /// оператора это выглядело как мигание, а «проблема исчезла» и
+    /// «условие перестало подтверждаться» — разные утверждения.
+    materialized: Option<Problem>,
 }
 
 /// Анализатор проблем.
@@ -92,13 +102,17 @@ impl Analyzer {
         let enter_after = self.cfg.enter_after_ticks;
         let clear_after = self.cfg.clear_after_ticks;
         let mut problems: Vec<Problem> = Vec::new();
+        let mut hit_ids: HashSet<ProblemId> = HashSet::new();
 
         for (id, hit) in hits {
+            let _ = hit_ids.insert(id);
+            let kind = graph.get(id.entity).map(|entity| entity.kind);
             let state = self.state.entry(id).or_insert_with(|| State {
                 hysteresis: Hysteresis::default(),
                 since: now,
                 streak: 0,
                 last_seen: now,
+                materialized: None,
             });
             let was_open = state.hysteresis.open;
             let open = state
@@ -112,36 +126,58 @@ impl Analyzer {
                     state.streak = 0;
                 }
                 state.streak = state.streak.saturating_add(1);
-                let since = state.since;
-                let streak = state.streak;
+                let problem = Problem {
+                    id,
+                    severity: hit.severity,
+                    entity_name: hit.entity_name.clone(),
+                    title: hit.title.clone(),
+                    summary: hit.summary,
+                    evidence: hit.evidence,
+                    since: state.since,
+                    last_seen: now,
+                    streak: state.streak,
+                };
+                state.materialized = Some(problem.clone());
 
                 if !was_open {
-                    self.events.push(
+                    // Идентичность сущности обязательна: имя ею не является
+                    // (`dbus.socket` живёт и в системном, и в пользовательском
+                    // менеджере, PID переиспользуются). Без `entity` событие
+                    // невозможно связать с узлом графа.
+                    let mut event =
                         Event::new(now, EventKind::ProblemOpened, hit.entity_name.clone())
                             .severity(hit.severity)
                             .detail(hit.title.clone())
-                            .rule(id.rule),
-                    );
+                            .rule(id.rule);
+                    if let Some(kind) = kind {
+                        event = event.entity(id.entity, kind);
+                    }
+                    self.events.push(event);
                 }
 
-                problems.push(Problem {
-                    id,
-                    severity: hit.severity,
-                    entity_name: hit.entity_name,
-                    title: hit.title,
-                    summary: hit.summary,
-                    evidence: hit.evidence,
-                    since,
-                    last_seen: now,
-                    streak,
-                });
+                problems.push(problem);
             } else if was_open {
-                self.events.push(
-                    Event::new(now, EventKind::ProblemClosed, hit.entity_name.clone())
-                        .severity(Severity::Info)
-                        .detail(hit.title.clone())
-                        .rule(id.rule),
-                );
+                state.materialized = None;
+                let mut event = Event::new(now, EventKind::ProblemClosed, hit.entity_name.clone())
+                    .severity(Severity::Info)
+                    .detail(hit.title.clone())
+                    .rule(id.rule);
+                if let Some(kind) = kind {
+                    event = event.entity(id.entity, kind);
+                }
+                self.events.push(event);
+            }
+        }
+
+        // Нейтральная зона: правило не выдало попадания, но проблема открыта.
+        // Она обязана остаться в снимке, иначе оператор видит исчезновение
+        // без события о закрытии.
+        for (id, state) in &self.state {
+            if hit_ids.contains(id) || !state.hysteresis.open {
+                continue;
+            }
+            if let Some(problem) = state.materialized.clone() {
+                problems.push(problem);
             }
         }
 
