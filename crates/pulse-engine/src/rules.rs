@@ -159,6 +159,20 @@ impl ThresholdRule {
                 EntityKind::Cgroup,
             ] {
                 for entity in ctx.graph.entities_of_kind(kind) {
+                    // Метрики cgroup намеренно дублируются на её владельца
+                    // (`cgroup.rs`: `derived.publish`), чтобы оператор искал
+                    // `nginx.service`, а не inode. Значит одна беда лежит на
+                    // двух сущностях сразу, и правило обязано выбрать одну -
+                    // иначе список показывает два одинаковых пункта. Выбран
+                    // владелец: он и есть ответ на вопрос «что сломалось».
+                    //
+                    // Условие именно «владелец уже несёт это значение», а не
+                    // «владелец существует»: иначе при отброшенном по лимиту
+                    // серий сэмпле владельца проблема исчезла бы вовсе, то
+                    // есть починка дублирования создала бы слепоту.
+                    if kind == EntityKind::Cgroup && owner_reports(ctx, entity.id, metric) {
+                        continue;
+                    }
                     if let Some(value) = ctx.value(entity.id, metric) {
                         found.push((entity.id, value));
                     }
@@ -184,6 +198,21 @@ impl ThresholdRule {
 
         found
     }
+}
+
+/// Несёт ли владелец cgroup то же значение метрики.
+///
+/// Владение — это связь `OwnedBy` от cgroup к владельцу, а не совпадение
+/// имён: `api.service` как unit и как каталог cgroup называются одинаково,
+/// но склейка по имени соединила бы и разные экземпляры одного unit из
+/// системного и пользовательского менеджера.
+fn owner_reports(ctx: &RuleCtx<'_>, cgroup: EntityId, metric: MetricId) -> bool {
+    ctx.graph
+        .relations_of(cgroup)
+        .filter(|relation| {
+            relation.from == cgroup && relation.kind == pulse_core::relation::RelationKind::OwnedBy
+        })
+        .any(|relation| ctx.value(relation.to, metric).is_some())
 }
 
 impl Rule for ThresholdRule {
@@ -583,6 +612,22 @@ mod tests {
             self.latest.set(SeriesKey::new(entity, metric), value);
         }
 
+        /// Техническая cgroup, которой владеет unit фикстуры: ровно та
+        /// топология, что строит коллектор на живом хосте.
+        fn own_cgroup(&mut self, name: &str) -> EntityId {
+            self.graph.begin_tick(self.now);
+            let host = self.graph.host();
+            let cgroup = self
+                .graph
+                .upsert(EntitySpec::new(EntityKey::Cgroup { cgroup_id: 4_242 }, name).parent(host));
+            let owned = pulse_core::relation::RelationKind::OwnedBy;
+            let backed = pulse_core::relation::RelationKind::BackedBy;
+            self.graph.relate(cgroup, owned, self.unit);
+            self.graph.relate(self.unit, backed, cgroup);
+            let _ = self.graph.end_tick();
+            cgroup
+        }
+
         fn ctx<'a>(&'a self, cfg: &'a RulesCfg) -> RuleCtx<'a> {
             RuleCtx {
                 graph: &self.graph,
@@ -663,6 +708,66 @@ mod tests {
         assert_eq!(hits.len(), 1);
         let hit = hits.first().expect("срабатывание");
         assert!(hit.evidence.iter().any(|e| e.label.contains("лимит")));
+    }
+
+    /// PULSE-064: одна проблема на одну беду.
+    ///
+    /// Коллектор намеренно дублирует метрики cgroup на её владельца
+    /// (`derived.publish`), чтобы оператор искал `nginx.service`, а не inode
+    /// технической cgroup. Но правило обходило и `Unit`, и `Cgroup`, поэтому
+    /// одна исчерпанная квота давала два пункта с одинаковым заголовком и
+    /// одинаковым именем: список выглядел как сломанный.
+    #[test]
+    fn owned_cgroup_does_not_duplicate_the_problem_of_its_owner() {
+        let cfg = RulesCfg::default();
+        let mut fixture = Fixture::new();
+        let cgroup = fixture.own_cgroup("nginx.service");
+        let unit = fixture.unit;
+
+        // Ровно то, что делает коллектор: значение публикуется на обеих.
+        for entity in [cgroup, unit] {
+            fixture.set(entity, ids::CG_CPU_THROTTLE_RATIO, 0.9);
+            fixture.set(entity, ids::CG_CPU_LIMIT_CORES, 8.0);
+        }
+
+        let hits = rule("cgroup.throttle").evaluate(&fixture.ctx(&cfg));
+        let entering: Vec<_> = hits.iter().filter(|hit| hit.enter).collect();
+
+        assert_eq!(
+            entering.len(),
+            1,
+            "одна исчерпанная квота обязана дать одну проблему: {entering:?}"
+        );
+        assert_eq!(
+            entering.first().map(|hit| hit.entity),
+            Some(unit),
+            "проблему обязан нести владелец: оператор ищет сервис, а не inode"
+        );
+    }
+
+    /// Обратная сторона починки дублирования: молчание тоже дефект.
+    ///
+    /// Если сэмпл владельца не дошёл (например, отброшен по лимиту серий),
+    /// проблема обязана остаться видимой на cgroup. Иначе исправление
+    /// дубликата превратилось бы в потерю наблюдения.
+    #[test]
+    fn cgroup_keeps_the_problem_when_its_owner_reports_nothing() {
+        let cfg = RulesCfg::default();
+        let mut fixture = Fixture::new();
+        let cgroup = fixture.own_cgroup("nginx.service");
+
+        // Значение есть только у cgroup: владелец молчит.
+        fixture.set(cgroup, ids::CG_CPU_THROTTLE_RATIO, 0.9);
+        fixture.set(cgroup, ids::CG_CPU_LIMIT_CORES, 8.0);
+
+        let hits = rule("cgroup.throttle").evaluate(&fixture.ctx(&cfg));
+        let entering: Vec<_> = hits.iter().filter(|hit| hit.enter).collect();
+
+        assert_eq!(
+            entering.iter().map(|hit| hit.entity).collect::<Vec<_>>(),
+            vec![cgroup],
+            "без значения у владельца проблему обязана нести cgroup: {entering:?}"
+        );
     }
 
     #[test]
