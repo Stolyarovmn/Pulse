@@ -105,6 +105,9 @@ cgroup 90..=149, process 150..=189, agent 190..=219).
 | Инфраструктура проверки аудита: `CountingFs` считает фактические чтения, `ScriptedFs` детерминированно меняет ответ по пути между вызовами, property-тесты закрепляют санитайзер, арифметику времени и отсев не-finite значений | `pulse-collect/src/test_support.rs`, `pulse-core/tests/properties.rs`, `pulse-store/tests/properties.rs` | реализовано |
 | RED-репродьюсеры находок аудита: 13 дефектов зафиксированы падающими тестами под `#[ignore]`, `scripts/audit-red.sh` требует продвижения теста при исправлении дефекта | `crates/*/tests/audit_red.rs`, `scripts/audit-red.sh`, `docs/VERIFICATION_RED.md` | реализовано |
 | Детерминированный обязательный CI: точный toolchain 1.85.1, все шаги с `--locked`, `PROPTEST_CASES` задан; отдельный гейт advisory и дубликатов зависимостей | `.github/workflows/ci.yml`, `.github/workflows/supply-chain.yml`, `scripts/wsl-verify.sh` | реализовано |
+| Граница доверия метк: значение проходит санитизацию и усекается по границе UTF-8 не позже лимита, поэтому недоверенная строка из `/proc` не роняет агент | `pulse-core/src/entity.rs` (`Labels::set`), `pulse-core/src/redact.rs` (`sanitize_with_limit`) | реализовано |
+| Валидация конфигурации отклоняет `crit < warn` и нулевые операционные лимиты, называя последствие | `pulse-core/src/config.rs` (`ConfigError::Severity`, `ConfigError::ZeroLimit`) | реализовано |
+| Opt-in сокрытие безымянных токенов по энтропии: `security.redact_high_entropy` доходит до метки `cmdline`, в режиме `Off` не действует | `pulse-core/src/redact.rs` (`looks_high_entropy`), `pulse-collect/src/process.rs` | реализовано |
 
 ## 7. CLI (`crates/pulse-cli`)
 

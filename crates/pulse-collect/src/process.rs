@@ -159,7 +159,11 @@ impl ProcessCollector {
             {
                 let argv = parse_cmdline(&raw);
                 if !argv.is_empty() {
-                    let redacted = redact_argv(&argv, self.security.redact);
+                    let redacted = redact_argv(
+                        &argv,
+                        self.security.redact,
+                        self.security.redact_high_entropy,
+                    );
                     self.redactions = self.redactions.saturating_add(u64::from(redacted.hidden));
                     labels.set("cmdline", redacted.text);
                 }
@@ -607,6 +611,37 @@ mod tests {
         assert!(!cmdline.contains("hunter2"), "секрет в метке: {cmdline}");
         assert!(cmdline.contains("<redacted>"));
         assert!(cmdline.contains("--port=80"));
+        assert!(collector.redactions() >= 1);
+    }
+
+    #[test]
+    fn high_entropy_redaction_reaches_process_labels() {
+        let token = "AbCdEf0123456789GhIjKlMnOpQrStUv";
+        let mut raw = b"/usr/bin/app\0".to_vec();
+        raw.extend_from_slice(token.as_bytes());
+        raw.push(0);
+        let fs = tree(100).bytes("/proc/100/cmdline", &raw);
+        let mut security = security();
+        security.redact_high_entropy = true;
+        let mut collector = ProcessCollector::new(
+            Arc::new(fs),
+            PathBuf::from("/proc"),
+            PathBuf::from("/sys/fs/cgroup"),
+            security,
+            4096,
+            100,
+        );
+        let mut graph = EntityGraph::new("boot", "host", Timestamp::from_millis(1_000));
+        let _ = run(&mut collector, &mut graph, 2_000);
+        let pid = process_id(&graph);
+        let entity = graph.get(pid).expect("процесс");
+        let cmdline = entity.labels.get("cmdline").unwrap_or_default();
+
+        assert!(
+            !cmdline.contains(token),
+            "opt-in эвристика обязана скрыть токен в метке: {cmdline}"
+        );
+        assert!(cmdline.contains("<redacted>"));
         assert!(collector.redactions() >= 1);
     }
 

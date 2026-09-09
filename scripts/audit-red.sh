@@ -24,10 +24,6 @@ filter="${1:-}"
 # Продвинутые тесты (дефект исправлен) здесь не перечисляются: они уходят
 # в обязательный набор.
 reproducers=(
-    "pulse-core audit_red_labels_truncate_on_char_boundary PULSE-007/043"
-    "pulse-core audit_red_labels_are_terminal_safe PULSE-087"
-    "pulse-core audit_red_reject_crit_below_warn PULSE-023"
-    "pulse-core audit_red_reject_zero_operational_limits PULSE-081"
     "pulse-export audit_red_process_export_keeps_incarnation_identity PULSE-070"
 )
 expected_red=0

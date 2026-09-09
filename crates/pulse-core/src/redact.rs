@@ -93,18 +93,29 @@ const SECRET_KEYS: &[(&str, bool)] = &[
     ("keyfile-password", false),
 ];
 
-/// Убирает из строки всё, что может управлять терминалом или подменять его вывод.
+/// Очищает строку для доверенного состояния с заданным пределом символов.
 ///
-/// Удаляются: ANSI/DEC escape-последовательности целиком, символы C0/C1,
-/// zero-width и bidi-override символы. Длина ограничена [`MAX_DISPLAY_LEN`].
+/// Отдельный предел нужен потому, что отображаемая строка ограничена 256
+/// символами, а метка сущности — 512 байт. Смешивать эти два контракта
+/// нельзя: очистка управляющих символов общая, бюджет хранения разный.
+#[must_use]
+pub(crate) fn sanitize_with_limit(input: &str, max_chars: usize) -> String {
+    sanitize_bounded(input, max_chars)
+}
+
+/// Убирает из строки всё, что может управлять терминалом или подменять его вывод.
 #[must_use]
 pub fn sanitize_display(input: &str) -> String {
-    let mut out = String::with_capacity(input.len().min(MAX_DISPLAY_LEN));
+    sanitize_bounded(input, MAX_DISPLAY_LEN)
+}
+
+fn sanitize_bounded(input: &str, max_chars: usize) -> String {
+    let mut out = String::with_capacity(input.len().min(max_chars));
     let mut chars = input.chars().peekable();
     let mut truncated = false;
 
     while let Some(c) = chars.next() {
-        if out.chars().count() >= MAX_DISPLAY_LEN {
+        if out.chars().count() >= max_chars {
             truncated = true;
             break;
         }
@@ -173,8 +184,13 @@ fn skip_escape_sequence(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
 }
 
 /// Скрывает секреты в командной строке, представленной массивом аргументов.
+///
+/// `high_entropy` включает дополнительную opt-in эвристику для токенов без
+/// говорящего ключа. Она не действует при `RedactMode::Off`: этот режим
+/// означает явный отказ от сокрытия, и скрывать в нём часть аргументов было
+/// бы неожиданной смешанной политикой.
 #[must_use]
-pub fn redact_argv(argv: &[String], mode: RedactMode) -> Redacted {
+pub fn redact_argv(argv: &[String], mode: RedactMode, high_entropy: bool) -> Redacted {
     if argv.is_empty() {
         return Redacted {
             text: String::new(),
@@ -222,6 +238,14 @@ pub fn redact_argv(argv: &[String], mode: RedactMode) -> Redacted {
                 parts.push(format!("{key}={REDACTED}"));
                 continue;
             }
+            // Токен без говорящего имени: ключ сохраняется, значение
+            // скрывается. Проверяется только часть после `=`, иначе
+            // повторяющийся длинный флаг исказил бы оценку энтропии.
+            if high_entropy && value.len() > 1 && looks_high_entropy(&value[1..]) {
+                hidden = hidden.saturating_add(1);
+                parts.push(format!("{key}={REDACTED}"));
+                continue;
+            }
         } else if index > 0 && is_secret_key(&arg) {
             // Флаг без значения: скрываем следующий аргумент.
             hide_next_value = true;
@@ -236,6 +260,14 @@ pub fn redact_argv(argv: &[String], mode: RedactMode) -> Redacted {
             continue;
         }
 
+        // Standalone bearer/API token без говорящего ключа. Исполняемый
+        // файл (index 0) не скрывается: длинный путь с хешем сборки не секрет.
+        if high_entropy && index > 0 && looks_high_entropy(&arg) {
+            hidden = hidden.saturating_add(1);
+            parts.push(REDACTED.to_string());
+            continue;
+        }
+
         parts.push(arg);
     }
 
@@ -243,6 +275,63 @@ pub fn redact_argv(argv: &[String], mode: RedactMode) -> Redacted {
         text: parts.join(" "),
         hidden,
     }
+}
+
+/// Похож ли аргумент на случайный токен.
+///
+/// Эвристика намеренно консервативна и opt-in:
+///
+/// - минимум 24 ASCII-символа — короткие имена/идентификаторы не трогаются;
+/// - только алфавит токенов (`A-Z a-z 0-9 _ - + / =`);
+/// - одновременно буквы и цифры;
+/// - минимум 12 разных символов;
+/// - энтропия Шеннона не ниже 3.5 бит/символ.
+///
+/// Пути, Unicode-текст и обычные флаги не считаются токенами. Чистые hex
+/// хеши всё ещё могут быть скрыты — настройка предупреждает о ложных
+/// срабатываниях и потому выключена по умолчанию.
+fn looks_high_entropy(value: &str) -> bool {
+    const MIN_LEN: usize = 24;
+    const MIN_DISTINCT: usize = 12;
+    const MIN_ENTROPY: f64 = 3.5;
+
+    if value.len() < MIN_LEN || !value.is_ascii() || value.starts_with('/') || value.contains('\\')
+    {
+        return false;
+    }
+    let mut counts = [0_u16; 128];
+    let mut letters = false;
+    let mut digits = false;
+    for byte in value.bytes() {
+        let allowed =
+            byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'+' | b'/' | b'=');
+        if !allowed {
+            return false;
+        }
+        letters |= byte.is_ascii_alphabetic();
+        digits |= byte.is_ascii_digit();
+        if let Some(count) = counts.get_mut(usize::from(byte)) {
+            *count = count.saturating_add(1);
+        }
+    }
+    if !letters || !digits {
+        return false;
+    }
+    let distinct = counts.iter().filter(|count| **count > 0).count();
+    if distinct < MIN_DISTINCT {
+        return false;
+    }
+
+    let len = value.len() as f64;
+    let entropy = counts
+        .iter()
+        .filter(|count| **count > 0)
+        .map(|count| {
+            let probability = f64::from(*count) / len;
+            -probability * probability.log2()
+        })
+        .sum::<f64>();
+    entropy >= MIN_ENTROPY
 }
 
 /// Разбирает сырое содержимое `/proc/<pid>/cmdline` (NUL-разделённое) в аргументы.
@@ -352,6 +441,7 @@ mod tests {
         let r = redact_argv(
             &argv(&["mysqld", "--password=hunter2", "--port=3306"]),
             RedactMode::Secrets,
+            false,
         );
         assert!(!r.text.contains("hunter2"));
         assert!(r.text.contains("--password=<redacted>"));
@@ -364,6 +454,7 @@ mod tests {
         let r = redact_argv(
             &argv(&["app", "--token", "abc123xyz", "--verbose"]),
             RedactMode::Secrets,
+            false,
         );
         assert!(!r.text.contains("abc123xyz"));
         assert!(r.text.contains("--token <redacted>"));
@@ -376,6 +467,7 @@ mod tests {
         let r = redact_argv(
             &argv(&["worker", "postgres://admin:s3cr3t@db:5432/app"]),
             RedactMode::Secrets,
+            false,
         );
         assert!(!r.text.contains("s3cr3t"));
         assert!(r.text.contains("postgres://admin:<redacted>@db:5432/app"));
@@ -387,6 +479,7 @@ mod tests {
         let r = redact_argv(
             &argv(&["svc", "--db.password=zzz", "PGPASSWORD=yyy"]),
             RedactMode::Secrets,
+            false,
         );
         assert!(!r.text.contains("zzz"));
         assert!(!r.text.contains("yyy"));
@@ -398,6 +491,7 @@ mod tests {
         let r = redact_argv(
             &argv(&["/usr/bin/app", "--safe", "--also-safe"]),
             RedactMode::Aggressive,
+            false,
         );
         assert_eq!(r.text, "/usr/bin/app <2 args hidden>");
         assert_eq!(r.hidden, 2);
@@ -408,6 +502,7 @@ mod tests {
         let r = redact_argv(
             &argv(&["app", "--password=p", "\u{1b}[31mred"]),
             RedactMode::Off,
+            false,
         );
         assert!(
             r.text.contains("--password=p"),
@@ -434,6 +529,52 @@ mod tests {
         let args = parse_cmdline(raw);
         assert_eq!(args.len(), 3);
         assert_eq!(args.first().map(String::as_str), Some("/bin/app"));
+    }
+
+    #[test]
+    fn high_entropy_mode_masks_unnamed_tokens_only_when_enabled() {
+        let token = "AbCdEf0123456789GhIjKlMnOpQrStUv";
+        let input = argv(&["worker", token, "--safe=normal"]);
+
+        let normal = redact_argv(&input, RedactMode::Secrets, false);
+        assert!(
+            normal.text.contains(token),
+            "выключенная эвристика не меняет прежнее поведение"
+        );
+
+        let hardened = redact_argv(&input, RedactMode::Secrets, true);
+        assert!(
+            !hardened.text.contains(token),
+            "случайный токен обязан скрыться"
+        );
+        assert!(hardened.text.contains(REDACTED));
+        assert_eq!(hardened.hidden, 1);
+    }
+
+    #[test]
+    fn high_entropy_mode_preserves_key_and_ignores_paths_and_words() {
+        let token = "AbCdEf0123456789GhIjKlMnOpQrStUv";
+        let opaque = format!("opaque={token}");
+        let input = argv(&[
+            "/opt/build-1234567890abcdef/app",
+            &opaque,
+            "/srv/releases/1234567890abcdef/app",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ]);
+        let redacted = redact_argv(&input, RedactMode::Secrets, true);
+
+        assert!(redacted.text.contains(&format!("opaque={REDACTED}")));
+        assert!(redacted.text.contains("/srv/releases/1234567890abcdef/app"));
+        assert!(redacted.text.contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+        assert_eq!(redacted.hidden, 1);
+    }
+
+    #[test]
+    fn off_mode_explicitly_ignores_high_entropy_option() {
+        let token = "AbCdEf0123456789GhIjKlMnOpQrStUv";
+        let redacted = redact_argv(&argv(&["app", token]), RedactMode::Off, true);
+        assert!(redacted.text.contains(token));
+        assert_eq!(redacted.hidden, 0);
     }
 
     #[test]

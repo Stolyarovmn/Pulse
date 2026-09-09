@@ -24,10 +24,10 @@
 
 | Finding | Тест | Крейт | Наблюдаемое падение | Статус |
 |---|---|---|---|---|
-| PULSE-007 / PULSE-043 | `audit_red_labels_truncate_on_char_boundary` | pulse-core | `panicked at crates/pulse-core/src/entity.rs:242: assertion failed: self.is_char_boundary(new_len)` | RED |
-| PULSE-087 | `audit_red_labels_are_terminal_safe` | pulse-core | `метка не имеет права содержать ESC: "safe\u{1b}]8;;https://evil…"` | RED |
-| PULSE-023 | `audit_red_reject_crit_below_warn` | pulse-core | `порог crit ниже warn обязан быть отклонён, получено: Ok(())` | RED |
-| PULSE-081 | `audit_red_reject_zero_operational_limits` | pulse-core | `нулевые лимиты обязаны отклоняться, приняты: ["export.rate_limit_per_minute", "export.max_series", "store.max_series"]` | RED |
+| PULSE-007 / PULSE-043 | `audit_red_labels_truncate_on_char_boundary` | pulse-core | `panicked at crates/pulse-core/src/entity.rs:242: assertion failed: self.is_char_boundary(new_len)` | PROMOTED в PR-08 |
+| PULSE-087 | `audit_red_labels_are_terminal_safe` | pulse-core | `метка не имеет права содержать ESC: "safe\u{1b}]8;;https://evil…"` | PROMOTED в PR-08 |
+| PULSE-023 | `audit_red_reject_crit_below_warn` | pulse-core | `порог crit ниже warn обязан быть отклонён, получено: Ok(())` | PROMOTED в PR-08 |
+| PULSE-081 | `audit_red_reject_zero_operational_limits` | pulse-core | `нулевые лимиты обязаны отклоняться, приняты: ["export.rate_limit_per_minute", "export.max_series", "store.max_series"]` | PROMOTED в PR-08 |
 | PULSE-002 / PULSE-048 | `audit_red_stale_value_is_not_current` | pulse-store | `значение без свежего наблюдения не имеет права возвращаться как текущее: Some(0.9)` | PROMOTED в PR-02 |
 | PULSE-010 / PULSE-035 | `audit_red_window_crossing_warm_and_hot_keeps_prefix` | pulse-store | `начало запрошенного окна обязано остаться в ответе, получено 32000 мс` | PROMOTED в PR-04 |
 | PULSE-038 | `audit_red_oldest_reflects_warm_retention` | pulse-store | `oldest обязан учитывать warm-слой, получено 32000 мс` | PROMOTED в PR-04 |

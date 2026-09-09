@@ -235,11 +235,27 @@ impl Labels {
     /// Максимальная длина значения метки. Совпадает по смыслу с лимитами VictoriaMetrics.
     pub const MAX_VALUE_LEN: usize = 512;
 
-    /// Добавляет или заменяет метку. Значение усекается и санитизируется вызывающим.
+    /// Добавляет или заменяет метку.
+    ///
+    /// Значение приходит из недоверенного источника (`cmdline`, путь cgroup,
+    /// цель `exe`), поэтому здесь и проходит граница доверия:
+    ///
+    /// 1. `sanitize_display` снимает управляющие последовательности —
+    ///    `SECURITY.md` обещает, что в доверенном состоянии лежат уже
+    ///    очищенные строки, но раньше этот инвариант API не обеспечивал;
+    /// 2. усечение идёт по границе символа. `String::truncate` требует
+    ///    границу UTF-8 и паникует внутри многобайтового символа, то есть
+    ///    локальный процесс мог уронить агент, подобрав длину аргумента.
     pub fn set(&mut self, key: &'static str, value: impl Into<String>) {
-        let mut value = value.into();
+        let mut value = crate::redact::sanitize_with_limit(&value.into(), Self::MAX_VALUE_LEN);
         if value.len() > Self::MAX_VALUE_LEN {
-            value.truncate(Self::MAX_VALUE_LEN);
+            // Ближайшая граница символа не позже лимита: значение остаётся
+            // валидным UTF-8 и не превышает предел.
+            let mut cut = Self::MAX_VALUE_LEN;
+            while cut > 0 && !value.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            value.truncate(cut);
         }
         match self.0.iter_mut().find(|(k, _)| *k == key) {
             Some(slot) => slot.1 = value,

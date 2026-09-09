@@ -22,7 +22,6 @@ use pulse_core::entity::Labels;
 /// недоверенного источника (`cmdline`, путь cgroup). Значит локальный процесс
 /// может вызвать панику, подобрав длину аргумента.
 #[test]
-#[ignore = "audit RED: PULSE-007/043 — promote when remediation lands"]
 fn audit_red_labels_truncate_on_char_boundary() {
     // «ы» занимает два байта: 255 символов = 510 байт. Следующий трёхбайтовый
     // символ занимает байты 510..513, поэтому лимит 512 попадает внутрь него.
@@ -48,7 +47,6 @@ fn audit_red_labels_truncate_on_char_boundary() {
 /// `SECURITY.md` заявляет, что после границы доверия в состоянии лежат уже
 /// очищенные строки, но `Labels::set` не вызывает `sanitize_display`.
 #[test]
-#[ignore = "audit RED: PULSE-087 — promote when remediation lands"]
 fn audit_red_labels_are_terminal_safe() {
     let hostile = "safe\u{1b}]8;;https://evil\u{7}LINK\u{1b}]8;;\u{7}\u{202e}tail";
     let mut labels = Labels::new();
@@ -75,7 +73,6 @@ fn audit_red_labels_are_terminal_safe() {
 /// `clear < crit < warn` проходят валидацию: правило никогда не сможет
 /// сообщить о критическом уровне, потому что вход в проблему строже него.
 #[test]
-#[ignore = "audit RED: PULSE-023 — promote when remediation lands"]
 fn audit_red_reject_crit_below_warn() {
     let mut config = Config::default();
     config.rules.memory_util_clear = 0.10;
@@ -95,7 +92,6 @@ fn audit_red_reject_crit_below_warn() {
 /// в ноль не выдаёт ни одного токена, нулевой бюджет серий отдаёт пустой
 /// `/metrics`, нулевой лимит серий истории отвергает каждую новую серию.
 #[test]
-#[ignore = "audit RED: PULSE-081 — promote when remediation lands"]
 fn audit_red_reject_zero_operational_limits() {
     // Отдельная функция вместо массива кортежей с типом-функцией: сложный
     // тип в тесте лишь мешает читать сценарий.

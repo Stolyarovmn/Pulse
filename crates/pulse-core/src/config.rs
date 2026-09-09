@@ -362,6 +362,19 @@ pub enum ConfigError {
         enter: f64,
         clear: f64,
     },
+    #[error(
+        "критический порог ({crit}) должен быть не ниже порога предупреждения ({warn}) для {name}"
+    )]
+    Severity {
+        name: &'static str,
+        warn: f64,
+        crit: f64,
+    },
+    #[error("{name} = 0 делает подсистему неработоспособной: {consequence}")]
+    ZeroLimit {
+        name: &'static str,
+        consequence: &'static str,
+    },
 }
 
 impl Config {
@@ -452,6 +465,61 @@ impl Config {
             }
         }
 
+        // Критический порог ниже порога предупреждения делает уровень
+        // недостижимым: вход в проблему строже самой критики, поэтому
+        // правило никогда не сообщит crit.
+        let severities: &[(&'static str, f64, f64)] = &[
+            ("psi_cpu", r.psi_cpu_warn, r.psi_cpu_crit),
+            ("psi_memory", r.psi_memory_warn, r.psi_memory_crit),
+            ("psi_io", r.psi_io_warn, r.psi_io_crit),
+            ("throttle", r.throttle_warn, r.throttle_crit),
+            ("memory_util", r.memory_util_warn, r.memory_util_crit),
+            ("disk_await", r.disk_await_warn_ms, r.disk_await_crit_ms),
+            ("fd_util", r.fd_util_warn, r.fd_util_crit),
+            ("swap_util", r.swap_util_warn, r.swap_util_crit),
+        ];
+        for (name, warn, crit) in severities {
+            if crit < warn {
+                return Err(ConfigError::Severity {
+                    name,
+                    warn: *warn,
+                    crit: *crit,
+                });
+            }
+        }
+
+        // Ноль в операционных лимитах молча ломает подсистему. Отказ в
+        // старте честнее: иначе сервер поднимается и на каждый запрос
+        // отвечает 429, либо отдаёт пустой `/metrics`, либо история
+        // отвергает каждую новую серию.
+        let zero_limits: &[(&'static str, bool, &'static str)] = &[
+            (
+                "export.rate_limit_per_minute",
+                self.export.enabled && self.export.rate_limit_per_minute == 0,
+                "ни один запрос не получает токен, каждый ответ 429",
+            ),
+            (
+                "export.max_series",
+                self.export.enabled && self.export.max_series == 0,
+                "ответ /metrics не содержит ни одной серии",
+            ),
+            (
+                "export.max_series_per_metric",
+                self.export.enabled && self.export.max_series_per_metric == 0,
+                "ни одна метрика не попадает в ответ",
+            ),
+            (
+                "store.max_series",
+                self.store.max_series == 0,
+                "история отвергает каждую новую серию",
+            ),
+        ];
+        for (name, broken, consequence) in zero_limits {
+            if *broken {
+                return Err(ConfigError::ZeroLimit { name, consequence });
+            }
+        }
+
         Ok(())
     }
 
@@ -508,6 +576,110 @@ mod tests {
         assert!(matches!(
             c.validate(),
             Err(ConfigError::Hysteresis { name: "psi_io", .. })
+        ));
+    }
+
+    #[test]
+    fn critical_threshold_must_not_be_below_warning() {
+        let cases = [
+            ("psi_cpu", {
+                let mut c = Config::default();
+                c.rules.psi_cpu_crit = c.rules.psi_cpu_warn - 0.01;
+                c
+            }),
+            ("psi_memory", {
+                let mut c = Config::default();
+                c.rules.psi_memory_crit = c.rules.psi_memory_warn - 0.01;
+                c
+            }),
+            ("psi_io", {
+                let mut c = Config::default();
+                c.rules.psi_io_crit = c.rules.psi_io_warn - 0.01;
+                c
+            }),
+            ("throttle", {
+                let mut c = Config::default();
+                c.rules.throttle_crit = c.rules.throttle_warn - 0.01;
+                c
+            }),
+            ("memory_util", {
+                let mut c = Config::default();
+                c.rules.memory_util_crit = c.rules.memory_util_warn - 0.01;
+                c
+            }),
+            ("disk_await", {
+                let mut c = Config::default();
+                c.rules.disk_await_crit_ms = c.rules.disk_await_warn_ms - 0.1;
+                c
+            }),
+            ("fd_util", {
+                let mut c = Config::default();
+                c.rules.fd_util_crit = c.rules.fd_util_warn - 0.01;
+                c
+            }),
+            ("swap_util", {
+                let mut c = Config::default();
+                c.rules.swap_util_crit = c.rules.swap_util_warn - 0.01;
+                c
+            }),
+        ];
+        for (expected, config) in cases {
+            assert!(
+                matches!(
+                    config.validate(),
+                    Err(ConfigError::Severity { name, .. }) if name == expected
+                ),
+                "{expected}: crit ниже warn обязан быть отклонён"
+            );
+        }
+    }
+
+    #[test]
+    fn zero_operational_limits_are_rejected_only_when_relevant() {
+        let mut rate = Config::default();
+        rate.export.rate_limit_per_minute = 0;
+        assert!(matches!(
+            rate.validate(),
+            Err(ConfigError::ZeroLimit {
+                name: "export.rate_limit_per_minute",
+                ..
+            })
+        ));
+
+        let mut disabled_export = rate.clone();
+        disabled_export.export.enabled = false;
+        disabled_export
+            .validate()
+            .expect("выключенный exporter не использует свои лимиты");
+
+        let mut global = Config::default();
+        global.export.max_series = 0;
+        assert!(matches!(
+            global.validate(),
+            Err(ConfigError::ZeroLimit {
+                name: "export.max_series",
+                ..
+            })
+        ));
+
+        let mut per_metric = Config::default();
+        per_metric.export.max_series_per_metric = 0;
+        assert!(matches!(
+            per_metric.validate(),
+            Err(ConfigError::ZeroLimit {
+                name: "export.max_series_per_metric",
+                ..
+            })
+        ));
+
+        let mut store = Config::default();
+        store.store.max_series = 0;
+        assert!(matches!(
+            store.validate(),
+            Err(ConfigError::ZeroLimit {
+                name: "store.max_series",
+                ..
+            })
         ));
     }
 
