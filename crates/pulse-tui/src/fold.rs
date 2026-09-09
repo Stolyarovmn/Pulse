@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use pulse_core::entity::{Entity, EntityId, EntityKind};
+use pulse_core::entity::{Entity, EntityId, EntityKey, EntityKind};
 use pulse_core::snapshot::Snapshot;
 
 use crate::rows::EntityRow;
@@ -99,41 +99,32 @@ impl LogicalRow {
     }
 }
 
-/// Ключ логического объекта.
+/// Структурный ключ логического объекта.
 ///
-/// Юнит, его cgroup и его процессы имеют одно имя логического объекта, поэтому
-/// группировка идёт по имени владельца, а не по виду сущности.
-fn logical_key(snapshot: &Snapshot, entity: &Entity) -> String {
-    // Процесс принадлежит логическому объекту своего владельца.
-    if entity.kind == EntityKind::Process {
-        if let Some(owner) = owning_name(snapshot, entity) {
-            return owner;
-        }
-        // Процесс без владельца - самостоятельный объект.
-        return format!("process/{}", entity.name);
-    }
+/// Display name — только подпись: `dbus.socket` одновременно существует в
+/// system-manager и user-manager. Идентичность уже закодирована в `EntityKey`
+/// (для unit это полный cgroup-путь), поэтому свёртка обязана использовать её,
+/// а не заново изобретать идентичность из текста.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct LogicalObjectKey(EntityKey);
 
-    // Технический cgroup служебного контейнера носит длинный идентификатор:
-    // логическое имя берётся у владельца, если он есть.
-    if entity.kind == EntityKind::Cgroup {
-        if let Some(owner) = owning_name(snapshot, entity) {
-            return owner;
+fn logical_key(snapshot: &Snapshot, entity: &Entity) -> LogicalObjectKey {
+    // Процесс и техническая cgroup принадлежат логическому объекту владельца.
+    if matches!(entity.kind, EntityKind::Process | EntityKind::Cgroup) {
+        if let Some(owner) = owning_entity(snapshot, entity) {
+            return LogicalObjectKey(owner.key.clone());
         }
     }
-    entity.name.clone()
+    // Сущность без владельца — самостоятельный объект. Process key включает
+    // `(pid, start_ticks)`, поэтому два одноимённых процесса не склеиваются.
+    LogicalObjectKey(entity.key.clone())
 }
 
-/// Имя логического владельца сущности: unit, контейнер или pod.
-fn owning_name(snapshot: &Snapshot, entity: &Entity) -> Option<String> {
+/// Логический владелец сущности: unit, контейнер или pod.
+fn owning_entity<'a>(snapshot: &'a Snapshot, entity: &Entity) -> Option<&'a Entity> {
     // Прямые связи владения важнее иерархии: cgroup явно указывает владельца.
-    for relation in snapshot.relations_of(entity.id, Some(pulse_core::RelationKind::OwnedBy)) {
-        if relation.from == entity.id {
-            if let Some(owner) = snapshot.entity(relation.to) {
-                if is_logical_owner(owner.kind) {
-                    return Some(owner.name.clone());
-                }
-            }
-        }
+    if let Some(owner) = direct_owner(snapshot, entity.id) {
+        return Some(owner);
     }
     // Затем вверх по родителям до первого логического владельца.
     for id in snapshot.ancestry(entity.id) {
@@ -144,24 +135,24 @@ fn owning_name(snapshot: &Snapshot, entity: &Entity) -> Option<String> {
             continue;
         };
         if is_logical_owner(candidate.kind) {
-            return Some(candidate.name.clone());
+            return Some(candidate);
         }
-        // У cgroup спрашиваем его собственного владельца.
+        // У cgroup спрашиваем её собственного владельца.
         if candidate.kind == EntityKind::Cgroup {
-            for relation in
-                snapshot.relations_of(candidate.id, Some(pulse_core::RelationKind::OwnedBy))
-            {
-                if relation.from == candidate.id {
-                    if let Some(owner) = snapshot.entity(relation.to) {
-                        if is_logical_owner(owner.kind) {
-                            return Some(owner.name.clone());
-                        }
-                    }
-                }
+            if let Some(owner) = direct_owner(snapshot, candidate.id) {
+                return Some(owner);
             }
         }
     }
     None
+}
+
+fn direct_owner(snapshot: &Snapshot, entity: EntityId) -> Option<&Entity> {
+    snapshot
+        .relations_of(entity, Some(pulse_core::RelationKind::OwnedBy))
+        .filter(|relation| relation.from == entity)
+        .filter_map(|relation| snapshot.entity(relation.to))
+        .find(|owner| is_logical_owner(owner.kind))
 }
 
 /// Виды, которые оператор считает объектами, а не деталями реализации.
@@ -191,8 +182,8 @@ const fn representative_rank(kind: EntityKind) -> u8 {
 /// выполняет вызывающий, и свёртка не имеет права её незаметно менять.
 #[must_use]
 pub fn fold(snapshot: &Snapshot, rows: &[EntityRow]) -> Vec<LogicalRow> {
-    let mut order: Vec<String> = Vec::new();
-    let mut groups: HashMap<String, LogicalRow> = HashMap::new();
+    let mut order: Vec<LogicalObjectKey> = Vec::new();
+    let mut groups: HashMap<LogicalObjectKey, LogicalRow> = HashMap::new();
 
     for row in rows {
         let Some(entity) = snapshot.entity(row.id) else {
@@ -621,6 +612,105 @@ mod tests {
             .expect("сервис есть");
         // Представителем стал unit, а не cgroup: он логичнее для оператора.
         assert_eq!(angie.row.kind, EntityKind::Unit);
+    }
+
+    /// PULSE-064: одинаковая подпись не означает один логический объект.
+    ///
+    /// `dbus.socket` существует одновременно в system-manager и user-manager.
+    /// Их display name одинаков, но EntityKey содержит полный cgroup-путь.
+    /// Свёртка по строке имени смешивала их метрики и процессы в одну строку.
+    #[test]
+    fn equal_display_names_of_distinct_units_do_not_fold_together() {
+        let mut graph = EntityGraph::new("boot", "host", Timestamp::from_millis(1_000));
+        graph.begin_tick(Timestamp::from_millis(2_000));
+        let host = graph.host();
+
+        for (inode, identity) in [
+            (10, "system.slice/dbus.socket"),
+            (
+                20,
+                "user.slice/user-1000.slice/user@1000.service/dbus.socket",
+            ),
+        ] {
+            let cgroup = graph.upsert(
+                EntitySpec::new(EntityKey::Cgroup { cgroup_id: inode }, "dbus.socket").parent(host),
+            );
+            let unit = graph.upsert(
+                EntitySpec::new(
+                    EntityKey::Unit {
+                        name: identity.into(),
+                    },
+                    "dbus.socket",
+                )
+                .parent(cgroup),
+            );
+            graph.relate(cgroup, RelationKind::OwnedBy, unit);
+        }
+        let batch = graph.end_tick();
+        let snapshot = Snapshot::build(
+            &graph,
+            LatestValues::new(),
+            Vec::new(),
+            batch.events,
+            AgentStats::default(),
+            "host",
+            "boot",
+        );
+        let rows = entity_rows(&snapshot, &App::default());
+        let folded = fold(&snapshot, &rows);
+        let dbus: Vec<_> = folded
+            .iter()
+            .filter(|row| row.row.name == "dbus.socket")
+            .collect();
+
+        assert_eq!(
+            dbus.len(),
+            2,
+            "два владельца с одинаковой подписью обязаны остаться двумя объектами: {dbus:?}"
+        );
+        assert!(
+            dbus.iter().all(|row| row.members.len() == 2),
+            "каждый unit обязан свернуться только со своей cgroup: {dbus:?}"
+        );
+    }
+
+    /// Два самостоятельных процесса с одним `comm` — тоже разные объекты.
+    /// Имя процесса не является идентичностью; ключ включает pid/start_ticks.
+    #[test]
+    fn equal_process_names_without_owner_remain_separate() {
+        let mut graph = EntityGraph::new("boot", "host", Timestamp::from_millis(1_000));
+        graph.begin_tick(Timestamp::from_millis(2_000));
+        let host = graph.host();
+        for pid in [100, 200] {
+            let _ = graph.upsert(
+                EntitySpec::new(
+                    EntityKey::Process {
+                        pid,
+                        start_ticks: 10,
+                    },
+                    "worker",
+                )
+                .parent(host),
+            );
+        }
+        let batch = graph.end_tick();
+        let snapshot = Snapshot::build(
+            &graph,
+            LatestValues::new(),
+            Vec::new(),
+            batch.events,
+            AgentStats::default(),
+            "host",
+            "boot",
+        );
+        let rows = entity_rows(&snapshot, &App::default());
+        let folded = fold(&snapshot, &rows);
+
+        assert_eq!(
+            folded.iter().filter(|row| row.row.name == "worker").count(),
+            2,
+            "одноимённые самостоятельные процессы нельзя склеивать"
+        );
     }
 
     /// Числа объекта - сумма его процессов, а не одной части.

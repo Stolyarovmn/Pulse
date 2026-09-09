@@ -113,6 +113,7 @@ cgroup 90..=149, process 150..=189, agent 190..=219).
 | Одна беда — один пункт: метрики cgroup дублируются на владельца намеренно, поэтому правило выбирает владельца, но оставляет проблему на cgroup, если владелец значения не несёт | `pulse-engine/src/rules.rs` (`owner_reports`) | реализовано |
 | Главный процесс сервиса выбирается по минимальному `(start_ticks, pid)`: старейшая инкарнация побеждает, PID — только tie-break после одновременного старта | `pulse-tui/src/pipe.rs` (`main_process`) | реализовано |
 | Неполный обход cgroup не выдаётся за полный: `max_cgroups`/`MAX_DEPTH` возвращают типизированный `CollectError::Truncated`, сохраняют непосещённые сущности и baseline, а runtime объявляет partial collection | `pulse-collect/src/cgroup.rs`, `pulse-core/src/graph.rs` | реализовано |
+| Логическая свёртка ключуется структурным `EntityKey`, а не display name: одинаковые подписи system/user unit и одноимённых самостоятельных процессов остаются разными объектами | `pulse-tui/src/fold.rs` (`LogicalObjectKey`) | реализовано |
 
 ## 7. CLI (`crates/pulse-cli`)
 

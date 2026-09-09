@@ -46,6 +46,8 @@
 | PULSE-070 | `audit_red_process_export_keeps_incarnation_identity` | pulse-export | `идентичность ряда обязана включать start_ticks: ["pulse_process_cpu_cores{pid=\"123\"}", "pulse_process_cpu_cores{pid=\"123\"}"]` | PROMOTED в PR-06 |
 | PULSE-039 | `audit_red_counter_rate_through_warm_layer` | pulse-store | — | UNEXPECTED_GREEN → PROMOTED (см. ниже) |
 | PULSE-066 | `cgroup_limit_stops_the_walk_and_reports_truncation` + `repeated_truncation_preserves_unvisited_entities_and_baselines` | pulse-collect | молчаливое усечение выдавало частичный граф за полный и после двух тактов удаляло непосещённые сущности | FIXED в PR-07b |
+| PULSE-086 | `ports_come_from_namespace_of_the_process_not_of_the_agent` + live netns inode probe | pulse-collect | inode слушающего сокета находился в `/proc/<pid>/net/tcp` и отсутствовал в `/proc/net/tcp` агента | FIXED в PR-06 |
+| PULSE-064 | `equal_display_names_of_distinct_units_do_not_fold_together` + `equal_process_names_without_owner_remain_separate` | pulse-tui | system/user `dbus.socket` склеивались в одну строку по display name | FIXED в PR-12 |
 | PULSE-001 | пять обязательных команд на `1.85.1` | workspace | `rustc 1.85.1 is not supported by: darling@0.24.1 requires rustc 1.88.0; instability@0.3.13 requires rustc 1.88` | FIXED в PR-01 |
 
 ### PULSE-039: почему тест зелёный
@@ -64,12 +66,10 @@ warm-слоя показала обратное: `History::rate` считает 
 
 | Finding | Причина | Куда уходит |
 |---|---|---|
-| PULSE-086 (порты в netns процесса) | нужен отдельный network namespace и слушающий процесс | LIVE_REQUIRED, PR-06 |
 | PULSE-009 (TOCTOU между проверкой и `kill`) | нужен pidfd-путь в production API | BLOCKED_BY_DESIGN, PR-06 |
 | PULSE-080 (bounded `read_dir`) | `FsSource::read_dir` возвращает `Vec`, поэтому обход нельзя прервать снаружи; `CountingFs` уже готов измерять работу после появления потокового API | BLOCKED_BY_DESIGN, PR-07 |
 | PULSE-079 (медленный TUI держит замок истории) | нужен runtime-шов, отделяющий выборку истории от отрисовки | BLOCKED_BY_DESIGN, PR-09 |
 | PULSE-015 (page size 4096) | обычный x86_64 CI имеет ровно 4096 и дефект не проявляется | LIVE_REQUIRED, PR-10 |
-| PULSE-064 (склейка сущностей при свёртке) | нужен `LogicalObjectKey` вместо display name | BLOCKED_BY_DESIGN, PR-12 |
 | PULSE-065 («главный процесс» по минимальному PID) | нужен фактический MainPID или явный признак догадки | BLOCKED_BY_DESIGN, PR-12 |
 | PULSE-067 (ширина в колонках терминала) | нужен переход на unicode-width в собственных помощниках | BLOCKED_BY_DESIGN, PR-12 |
 | PULSE-069 (advisory `lru 0.12.5`) | версия приходит транзитивно через `ratatui 0.29`; гейт добавлен, обновление — отдельная правка | гейт в PR-01, обновление в PR-13 |
