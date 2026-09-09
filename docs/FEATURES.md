@@ -108,6 +108,8 @@ cgroup 90..=149, process 150..=189, agent 190..=219).
 | Граница доверия метк: значение проходит санитизацию и усекается по границе UTF-8 не позже лимита, поэтому недоверенная строка из `/proc` не роняет агент | `pulse-core/src/entity.rs` (`Labels::set`), `pulse-core/src/redact.rs` (`sanitize_with_limit`) | реализовано |
 | Валидация конфигурации отклоняет `crit < warn` и нулевые операционные лимиты, называя последствие | `pulse-core/src/config.rs` (`ConfigError::Severity`, `ConfigError::ZeroLimit`) | реализовано |
 | Opt-in сокрытие безымянных токенов по энтропии: `security.redact_high_entropy` доходит до метки `cmdline`, в режиме `Off` не действует | `pulse-core/src/redact.rs` (`looks_high_entropy`), `pulse-collect/src/process.rs` | реализовано |
+| Идентичность процесса сквозная: метка ряда экспорта, кэш деталей и чтение `/proc` работают по паре `(pid, start_ticks)`, а смена процесса под номером заявляется оператору | `pulse-export/src/render.rs` (`label_fragment`), `pulse-core/src/details.rs` (`ProcessIdentity`, `DetailsCache`), `pulse-collect/src/details.rs` | реализовано |
+| Слушающие порты берутся из network namespace исследуемого процесса (`/proc/<pid>/net/*`), а не агента | `pulse-collect/src/details.rs` (`listening_ports`) | реализовано |
 
 ## 7. CLI (`crates/pulse-cli`)
 

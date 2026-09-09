@@ -2020,7 +2020,7 @@ fn process_inspector_answers_user_exe_and_ports() {
     #[derive(Debug)]
     struct Fixed;
     impl pulse_core::ProcessDetailsSource for Fixed {
-        fn details(&self, _pid: i32) -> pulse_core::ProcessDetails {
+        fn details(&self, _of: pulse_core::ProcessIdentity) -> pulse_core::ProcessDetails {
             pulse_core::ProcessDetails {
                 uid: Some(33),
                 user: Some("www-data".into()),
@@ -2037,6 +2037,7 @@ fn process_inspector_answers_user_exe_and_ports() {
                     port: 80,
                 }],
                 restricted: false,
+                identity_changed: false,
             }
         }
     }
@@ -2069,7 +2070,7 @@ fn restricted_details_explain_the_reason() {
     #[derive(Debug)]
     struct Restricted;
     impl pulse_core::ProcessDetailsSource for Restricted {
-        fn details(&self, _pid: i32) -> pulse_core::ProcessDetails {
+        fn details(&self, _of: pulse_core::ProcessIdentity) -> pulse_core::ProcessDetails {
             pulse_core::ProcessDetails {
                 uid: Some(0),
                 user: Some("root".into()),

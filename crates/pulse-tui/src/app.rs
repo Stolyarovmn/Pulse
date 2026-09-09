@@ -370,7 +370,11 @@ impl App {
 
     /// Детали процесса из кэша, одно чтение `/proc` на такт.
     #[must_use]
-    pub fn process_details(&self, snapshot: &Snapshot, pid: i32) -> Option<ProcessDetails> {
+    pub fn process_details(
+        &self,
+        snapshot: &Snapshot,
+        of: pulse_core::ProcessIdentity,
+    ) -> Option<ProcessDetails> {
         let source = self.details.as_ref()?;
         // Смена такта обязана сбрасывать кэш: процесс мог открыть файл или
         // закрыть порт, и показывать вчерашний ответ хуже, чем не показывать.
@@ -378,7 +382,7 @@ impl App {
             self.details_cache.borrow_mut().clear();
             self.details_tick.set(Some(snapshot.tick));
         }
-        Some(self.details_cache.borrow_mut().get(source.as_ref(), pid))
+        Some(self.details_cache.borrow_mut().get(source.as_ref(), of))
     }
 
     /// Набор иконок категорий в пайпе: приходит из настройки `ui.icons`.
@@ -435,8 +439,8 @@ impl App {
         if !state.needs_details() {
             return None;
         }
-        let (_, pid) = crate::pipe::main_process(snapshot, entity)?;
-        self.process_details(snapshot, pid)
+        let (_, identity) = crate::pipe::main_process(snapshot, entity)?;
+        self.process_details(snapshot, identity)
     }
 
     /// Заголовок отражает overlay/Inspector, который реально видит оператор.

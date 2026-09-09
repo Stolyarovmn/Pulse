@@ -11,13 +11,13 @@ use pulse_core::time::Timestamp;
 use pulse_core::EntityGraph;
 use pulse_export::render_openmetrics;
 
-/// RED-14 / PULSE-070: экспорт обязан различать инкарнации процесса.
+/// PULSE-070 (PROMOTED): экспорт обязан различать инкарнации процесса.
 ///
 /// Идентичность процесса в Pulse — пара `(pid, start_ticks)`, но метка серии
-/// содержит только `pid`. После переиспользования PID два разных процесса
-/// получают одну и ту же идентичность в OpenMetrics, и ряды склеиваются.
+/// содержала только `pid`. После переиспользования PID два разных процесса
+/// получали одну идентичность в OpenMetrics: ряды склеивались, а счётчик
+/// выглядел как сброшенный.
 #[test]
-#[ignore = "audit RED: PULSE-070 — promote when remediation lands"]
 fn audit_red_process_export_keeps_incarnation_identity() {
     let mut graph = EntityGraph::new("boot", "test-host", Timestamp::from_millis(1_000));
     graph.begin_tick(Timestamp::from_millis(2_000));

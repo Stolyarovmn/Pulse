@@ -23,9 +23,10 @@ filter="${1:-}"
 # Крейт и точное имя теста. Список ведётся вместе с docs/VERIFICATION_RED.md.
 # Продвинутые тесты (дефект исправлен) здесь не перечисляются: они уходят
 # в обязательный набор.
-reproducers=(
-    "pulse-export audit_red_process_export_keeps_incarnation_identity PULSE-070"
-)
+#
+# Список пуст: все воспроизведённые дефекты аудита исправлены и продвинуты в
+# регресс. Пустой прогон обязан быть успешным, иначе harness мешал бы CI.
+reproducers=()
 expected_red=0
 unexpected_green=0
 broken=0
@@ -70,6 +71,12 @@ done
 printf '\nвоспроизведено: %d, неожиданно зелёных: %d, сломанных проверок: %d\n' \
     "$expected_red" "$unexpected_green" "$broken"
 
-if [ "$unexpected_green" -gt 0 ] || [ "$broken" -gt 0 ] || [ "$expected_red" -eq 0 ]; then
+# Пустой список — успех: все дефекты исправлены и продвинуты в регресс.
+# Условие `expected_red -eq 0` при непустом списке означает другое: ни один
+# репродьюсер не сработал, то есть harness перестал доказывать дефекты.
+if [ "$unexpected_green" -gt 0 ] || [ "$broken" -gt 0 ]; then
+    exit 1
+fi
+if [ "${#reproducers[@]}" -gt 0 ] && [ "$expected_red" -eq 0 ]; then
     exit 1
 fi

@@ -317,8 +317,8 @@ pub fn build(
 ) -> Vec<Node> {
     // Детали живут у процесса, а пайп открывают и на сервисе: разрешаем
     // главный процесс один раз и подписываем, чьи это факты.
-    let owner_pid = main_process(snapshot, entity).map(|(_, pid)| pid);
-    let self_process = process_pid(snapshot, entity).is_some();
+    let owner_pid = main_process(snapshot, entity).map(|(_, identity)| identity.pid);
+    let self_process = process_identity(snapshot, entity).is_some();
     Branch::ALL
         .iter()
         .map(|branch| {
@@ -378,12 +378,15 @@ fn process_scope(snapshot: &Snapshot, entity: EntityId) -> Option<EntityId> {
 /// сама. Берётся процесс с наименьшим pid: у сервиса это, как правило,
 /// главный процесс, и выбор детерминирован.
 #[must_use]
-pub fn main_process(snapshot: &Snapshot, entity: EntityId) -> Option<(EntityId, i32)> {
-    if let Some(pid) = process_pid(snapshot, entity) {
-        return Some((entity, pid));
+pub fn main_process(
+    snapshot: &Snapshot,
+    entity: EntityId,
+) -> Option<(EntityId, pulse_core::ProcessIdentity)> {
+    if let Some(identity) = process_identity(snapshot, entity) {
+        return Some((entity, identity));
     }
     let scope = process_scope(snapshot, entity)?;
-    let mut best: Option<(EntityId, i32)> = None;
+    let mut best: Option<(EntityId, pulse_core::ProcessIdentity)> = None;
     let mut queue: Vec<EntityId> = vec![scope];
     let mut seen = 0_usize;
     while let Some(current) = queue.pop() {
@@ -394,9 +397,9 @@ pub fn main_process(snapshot: &Snapshot, entity: EntityId) -> Option<(EntityId, 
             break;
         }
         for child in snapshot.children(current) {
-            if let Some(pid) = process_pid(snapshot, child.id) {
-                if best.is_none_or(|(_, known)| pid < known) {
-                    best = Some((child.id, pid));
+            if let Some(identity) = process_identity(snapshot, child.id) {
+                if best.is_none_or(|(_, known)| identity.pid < known.pid) {
+                    best = Some((child.id, identity));
                 }
             } else {
                 queue.push(child.id);
@@ -406,9 +409,15 @@ pub fn main_process(snapshot: &Snapshot, entity: EntityId) -> Option<(EntityId, 
     best
 }
 
-fn process_pid(snapshot: &Snapshot, entity: EntityId) -> Option<i32> {
+/// Идентичность процесса: пара `(pid, start_ticks)`, а не номер.
+///
+/// Детали читаются под этой парой, потому что между кадром и чтением `/proc`
+/// процесс мог умереть, а номер - достаться другому.
+fn process_identity(snapshot: &Snapshot, entity: EntityId) -> Option<pulse_core::ProcessIdentity> {
     match snapshot.entity(entity).map(|found| &found.key) {
-        Some(pulse_core::EntityKey::Process { pid, .. }) => Some(*pid),
+        Some(pulse_core::EntityKey::Process { pid, start_ticks }) => {
+            Some(pulse_core::ProcessIdentity::new(*pid, *start_ticks))
+        }
         _ => None,
     }
 }
@@ -573,7 +582,7 @@ fn files(
 
 /// Процессы под сущностью: у сервиса их несколько, и это часть ответа.
 fn procs(snapshot: &Snapshot, entity: EntityId) -> Vec<String> {
-    if process_pid(snapshot, entity).is_some() {
+    if process_identity(snapshot, entity).is_some() {
         return vec!["это сам процесс".to_string()];
     }
     let Some(scope) = process_scope(snapshot, entity) else {
@@ -588,8 +597,8 @@ fn procs(snapshot: &Snapshot, entity: EntityId) -> Vec<String> {
             break;
         }
         for child in snapshot.children(current) {
-            if let Some(pid) = process_pid(snapshot, child.id) {
-                found.push((pid, child.name.clone()));
+            if let Some(identity) = process_identity(snapshot, child.id) {
+                found.push((identity.pid, child.name.clone()));
             } else {
                 queue.push(child.id);
             }
@@ -1170,7 +1179,7 @@ mod tests {
         );
 
         assert_eq!(
-            main_process(&snapshot, unit).map(|(_, pid)| pid),
+            main_process(&snapshot, unit).map(|(_, identity)| identity.pid),
             Some(262),
             "у unit обязан находиться главный процесс с наименьшим pid"
         );

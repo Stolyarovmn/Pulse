@@ -179,9 +179,13 @@ fn label_fragment(entity: &Entity) -> String {
         EntityKey::Unit { name } => {
             pairs.push(("unit", escape_label_value(name)));
         }
-        EntityKey::Process { pid, .. } => {
-            // PID — устойчивый идентификатор, а не имя процесса.
+        EntityKey::Process { pid, start_ticks } => {
+            // Идентичность процесса — пара `(pid, start_ticks)`, а не PID:
+            // ядро переиспользует номера, и после перезапуска другой процесс
+            // получал тот же ряд. Prometheus склеивал два разных процесса в
+            // одну серию, а counter выглядел как сброс счётчика.
             pairs.push(("pid", pid.to_string()));
+            pairs.push(("start_ticks", start_ticks.to_string()));
         }
         EntityKey::Container { runtime, id } => {
             pairs.push(("container", escape_label_value(id)));

@@ -366,10 +366,11 @@ fn process_details(
     snapshot: &Snapshot,
     entity: &Entity,
 ) -> Option<pulse_core::ProcessDetails> {
-    let pulse_core::EntityKey::Process { pid, .. } = entity.key else {
+    let pulse_core::EntityKey::Process { pid, start_ticks } = entity.key else {
         return None;
     };
-    let details = app.process_details(snapshot, pid)?;
+    let details =
+        app.process_details(snapshot, pulse_core::ProcessIdentity::new(pid, start_ticks))?;
     if details.is_empty() {
         return None;
     }
@@ -379,6 +380,16 @@ fn process_details(
 /// Строки деталей: только заполненные поля.
 fn details_rows(details: &pulse_core::ProcessDetails) -> Vec<(&'static str, String)> {
     let mut rows: Vec<(&'static str, String)> = Vec::new();
+    if details.identity_changed {
+        // Смесь фактов от двух процессов хуже отсутствия ответа, поэтому
+        // источник вернул пустоту. Оператор обязан знать причину: иначе экран
+        // выглядит как «деталей нет», хотя процесс просто сменился.
+        rows.push((
+            "process",
+            "сменился под этим pid, детали не читались".to_string(),
+        ));
+        return rows;
+    }
     if let Some(user) = &details.user {
         rows.push(("user", user.clone()));
     } else if let Some(uid) = details.uid {

@@ -51,7 +51,9 @@ pub mod snapshot;
 pub mod time;
 
 pub use config::{Config, ConfigError};
-pub use details::{DetailsCache, OpenFile, Port, ProcessDetails, ProcessDetailsSource};
+pub use details::{
+    DetailsCache, OpenFile, Port, ProcessDetails, ProcessDetailsSource, ProcessIdentity,
+};
 pub use entity::{
     Entity, EntityId, EntityKey, EntityKind, EntityRecord, EntitySpec, Labels, Runtime,
 };

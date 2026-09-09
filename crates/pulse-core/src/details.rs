@@ -60,6 +60,28 @@ pub struct ProcessDetails {
     /// видит `/proc/<pid>/fd` чужого пользователя, и молчаливо пустой список
     /// читался бы как «процесс не держит ни файлов, ни портов».
     pub restricted: bool,
+    /// Процесс с этим PID сменился, пока читались детали.
+    ///
+    /// Ядро переиспользует номера, а чтение деталей — это десятки отдельных
+    /// syscall. Между ними исследуемый процесс мог завершиться, а его номер -
+    /// достаться другому. Тогда `exe` относился бы к одному процессу, а порты
+    /// к другому: смесь фактов от двух процессов хуже отсутствия ответа.
+    pub identity_changed: bool,
+}
+
+/// Идентичность процесса: PID сам по себе идентификатором не является.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ProcessIdentity {
+    pub pid: i32,
+    /// Время старта в тактах ядра — вторая половина идентичности.
+    pub start_ticks: u64,
+}
+
+impl ProcessIdentity {
+    #[must_use]
+    pub const fn new(pid: i32, start_ticks: u64) -> Self {
+        ProcessIdentity { pid, start_ticks }
+    }
 }
 
 impl ProcessDetails {
@@ -67,6 +89,7 @@ impl ProcessDetails {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         !self.restricted
+            && !self.identity_changed
             && self.user.is_none()
             && self.exe.is_none()
             && self.cwd.is_none()
@@ -81,7 +104,7 @@ impl ProcessDetails {
 /// Трейт, а не свободная функция: интерфейс не должен знать о файловой системе,
 /// а тесты обязаны подставлять фикстуру без `/proc`.
 pub trait ProcessDetailsSource: Send + Sync + std::fmt::Debug {
-    fn details(&self, pid: i32) -> ProcessDetails;
+    fn details(&self, of: ProcessIdentity) -> ProcessDetails;
 }
 
 /// Кэш деталей: одно чтение на процесс, пока снимок не сменился.
@@ -90,16 +113,22 @@ pub trait ProcessDetailsSource: Send + Sync + std::fmt::Debug {
 /// то есть нажатие любой клавиши стоило бы десятки syscall.
 #[derive(Clone, Debug, Default)]
 pub struct DetailsCache {
-    entries: HashMap<i32, ProcessDetails>,
+    entries: HashMap<ProcessIdentity, ProcessDetails>,
 }
 
 impl DetailsCache {
-    pub fn get(&mut self, source: &dyn ProcessDetailsSource, pid: i32) -> ProcessDetails {
-        if let Some(cached) = self.entries.get(&pid) {
+    /// Ключ кэша — идентичность, а не PID: иначе после переиспользования
+    /// номера оператор увидел бы детали уже мёртвого процесса.
+    pub fn get(
+        &mut self,
+        source: &dyn ProcessDetailsSource,
+        of: ProcessIdentity,
+    ) -> ProcessDetails {
+        if let Some(cached) = self.entries.get(&of) {
             return cached.clone();
         }
-        let details = source.details(pid);
-        let _ = self.entries.insert(pid, details.clone());
+        let details = source.details(of);
+        let _ = self.entries.insert(of, details.clone());
         details
     }
 
@@ -120,22 +149,26 @@ mod tests {
     }
 
     impl ProcessDetailsSource for Counting {
-        fn details(&self, pid: i32) -> ProcessDetails {
+        fn details(&self, of: ProcessIdentity) -> ProcessDetails {
             let _ = self.calls.fetch_add(1, Ordering::Relaxed);
             ProcessDetails {
-                uid: Some(pid as u32),
+                uid: Some(of.pid as u32),
                 ..ProcessDetails::default()
             }
         }
     }
 
+    fn id(pid: i32, start_ticks: u64) -> ProcessIdentity {
+        ProcessIdentity::new(pid, start_ticks)
+    }
+
     #[test]
-    fn cache_reads_once_per_pid() {
+    fn cache_reads_once_per_identity() {
         let source = Counting::default();
         let mut cache = DetailsCache::default();
-        assert_eq!(cache.get(&source, 1).uid, Some(1));
-        assert_eq!(cache.get(&source, 1).uid, Some(1));
-        let _ = cache.get(&source, 2);
+        assert_eq!(cache.get(&source, id(1, 100)).uid, Some(1));
+        assert_eq!(cache.get(&source, id(1, 100)).uid, Some(1));
+        let _ = cache.get(&source, id(2, 100));
         assert_eq!(
             source.calls.load(Ordering::Relaxed),
             2,
@@ -143,18 +176,44 @@ mod tests {
         );
     }
 
+    /// Тот же номер с другим временем старта — другой процесс, и кэш обязан
+    /// это различать: иначе оператор увидел бы детали уже мёртвой программы.
+    #[test]
+    fn cache_separates_incarnations_of_one_pid() {
+        let source = Counting::default();
+        let mut cache = DetailsCache::default();
+        let _ = cache.get(&source, id(1, 100));
+        let _ = cache.get(&source, id(1, 200));
+        assert_eq!(
+            source.calls.load(Ordering::Relaxed),
+            2,
+            "переиспользованный pid обязан читаться заново"
+        );
+    }
+
     #[test]
     fn cache_clear_forces_reread() {
         let source = Counting::default();
         let mut cache = DetailsCache::default();
-        let _ = cache.get(&source, 1);
+        let _ = cache.get(&source, id(1, 100));
         cache.clear();
-        let _ = cache.get(&source, 1);
+        let _ = cache.get(&source, id(1, 100));
         assert_eq!(
             source.calls.load(Ordering::Relaxed),
             2,
             "новый снимок обязан давать новые детали"
         );
+    }
+
+    /// Смена процесса — это факт, а не пустота: `is_empty` не имеет права его
+    /// скрыть, иначе экран промолчит там, где обязан назвать причину.
+    #[test]
+    fn identity_change_is_not_empty() {
+        let details = ProcessDetails {
+            identity_changed: true,
+            ..ProcessDetails::default()
+        };
+        assert!(!details.is_empty());
     }
 
     #[test]
