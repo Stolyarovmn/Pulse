@@ -153,8 +153,12 @@ impl FsSource for DemoScene {
         self.with_scene(|scene| scene.read(path, cap))
     }
 
-    fn read_dir(&self, path: &std::path::Path) -> std::io::Result<Vec<std::ffi::OsString>> {
-        self.with_scene(|scene| scene.read_dir(path))
+    fn scan_dir(
+        &self,
+        path: &std::path::Path,
+        visit: &mut dyn FnMut(&std::ffi::OsStr) -> bool,
+    ) -> std::io::Result<()> {
+        self.with_scene(|scene| scene.scan_dir(path, visit))
     }
 
     fn read_link(&self, path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {

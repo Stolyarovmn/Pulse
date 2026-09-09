@@ -115,6 +115,7 @@ cgroup 90..=149, process 150..=189, agent 190..=219).
 | Неполный обход cgroup не выдаётся за полный и не выдаётся за отказ: `CollectError::Truncated` идёт в отдельный счётчик `collector_truncations` и метрику, `check` предупреждает с кодом 0, а настоящий отказ по-прежнему красный | `pulse-collect/src/cgroup.rs`, `pulse-cli/src/runtime.rs`, `pulse-cli/src/main.rs` | реализовано |
 | Логическая свёртка ключуется структурным `EntityKey`, а не display name: одинаковые подписи system/user unit и одноимённых самостоятельных процессов остаются разными объектами | `pulse-tui/src/fold.rs` (`LogicalObjectKey`) | реализовано |
 | `serve` перехватывает сигналы до первого такта и объявляет готовность строкой: сигнал в окне запуска даёт код 0 и оба shutdown, а не смерть от действия ядра | `pulse-cli/src/main.rs` (`serve`), `pulse-cli/tests/signals.rs` | реализовано |
+| Обход каталогов ядра потоковый и ограничен бюджетом до работы, а не после: `FsSource::scan_dir` с ранним выходом, `read_dir_capped` отличает бюджет от размера каталога, счёт дескрипторов без материализации | `pulse-collect/src/fs.rs`, `pulse-collect/src/process.rs`, `pulse-collect/src/cgroup.rs` | реализовано |
 
 ## 7. CLI (`crates/pulse-cli`)
 

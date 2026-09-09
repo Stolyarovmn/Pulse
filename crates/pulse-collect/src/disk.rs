@@ -60,7 +60,7 @@ impl DiskCollector {
             }
         }
         let sys_path = self.sys_root.join("block").join(name);
-        if self.fs.read_dir(&sys_path).is_ok() || self.fs.inode(&sys_path).is_ok() {
+        if self.fs.read_dir_capped(&sys_path, 1).is_ok() || self.fs.inode(&sys_path).is_ok() {
             return true;
         }
         // Эвристика: раздел заканчивается цифрой у nvme/mmc — через `p`, у sd/vd — просто цифрой.

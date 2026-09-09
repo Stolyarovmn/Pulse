@@ -201,23 +201,32 @@ impl Collector for ProcessCollector {
     }
 
     fn collect(&mut self, ctx: &mut CollectCtx<'_>) -> Result<(), CollectError> {
-        let Ok(entries) = self.fs.read_dir(&self.proc_root) else {
+        // Бюджет применяется к самому обходу, а не после него: на хосте с
+        // десятками тысяч процессов материализация всего `/proc` стоила
+        // памяти и syscall прежде, чем `max_processes` вообще смотрелся.
+        // `Arc` клонируется, чтобы замыкание не держало `&self`.
+        let fs = Arc::clone(&self.fs);
+        let mut pids: Vec<String> = Vec::with_capacity(self.max_processes.min(1_024));
+        let budget = self.max_processes;
+        let scanned = fs.scan_dir(&self.proc_root, &mut |name| {
+            let text = name.to_string_lossy();
+            // Не-числовые записи (`self`, `meminfo`, `net`) бюджет не тратят:
+            // иначе лимит съедался бы служебными именами.
+            if !text.is_empty() && text.chars().all(|c| c.is_ascii_digit()) {
+                pids.push(text.into_owned());
+            }
+            pids.len() < budget
+        });
+        if scanned.is_err() {
             return Err(CollectError::Unavailable("procfs"));
-        };
+        }
 
         let host = ctx.host();
         let interval = ctx.interval_secs().max(0.001);
         let mut seen: Vec<ProcKey> = Vec::new();
-        let mut processed = 0usize;
 
-        for entry in entries {
-            if processed >= self.max_processes {
-                break;
-            }
-            let pid_str = entry.to_string_lossy().into_owned();
-            if pid_str.is_empty() || !pid_str.chars().all(|c| c.is_ascii_digit()) {
-                continue;
-            }
+        for pid_str in pids {
+            // Фильтр и бюджет уже применены при обходе.
 
             let Some(stat) = self.read_stat(&pid_str) else {
                 continue;
@@ -234,10 +243,12 @@ impl Collector for ProcessCollector {
             let statm = self.read(&pid_str, "statm");
             let io = self.read(&pid_str, "io");
             let oom_score = self.read(&pid_str, "oom_score");
+            // Счёт без материализации: список дескрипторов сервера с тысячами
+            // соединений нужен как число, а вектор имён — только цена.
             let fd_count = self
                 .fs
-                .read_dir(&self.proc_root.join(&pid_str).join("fd"))
-                .map(|list| list.len() as f64)
+                .count_dir(&self.proc_root.join(&pid_str).join("fd"))
+                .map(|count| count as f64)
                 .ok();
             let cgroup = self.cgroup_entity(ctx, &pid_str);
 
@@ -270,7 +281,8 @@ impl Collector for ProcessCollector {
                 }
             }
 
-            processed += 1;
+            // Бюджет уже применён при обходе каталога, а счёт обработанных
+            // процессов равен длине `seen`.
             seen.push(key);
 
             let parent = cgroup.unwrap_or(host);
@@ -650,6 +662,48 @@ mod tests {
         assert!(collector.redactions() >= 1);
     }
 
+    /// PULSE-080: бюджет обязан ограничивать работу, а не только результат.
+    ///
+    /// Раньше `read_dir` материализовал весь `/proc`, и только потом цикл
+    /// останавливался по `max_processes`. На хосте с десятками тысяч процессов
+    /// агент платил за весь каталог памятью и обходом прежде, чем решить, что
+    /// столько ему не нужно.
+    #[test]
+    fn proc_walk_work_is_bounded_by_max_processes() {
+        const TOTAL: usize = 20_000;
+        const BUDGET: usize = 64;
+
+        let mut fs = FixtureFs::new();
+        for pid in 1..=TOTAL {
+            fs = fs.file(
+                &format!("/proc/{pid}/stat"),
+                &stat_line(pid as i32, "worker", 10, 5_000),
+            );
+        }
+        let counting = crate::test_support::CountingFs::new(Arc::new(fs));
+        let mut collector = ProcessCollector::new(
+            Arc::new(counting.clone()),
+            PathBuf::from("/proc"),
+            PathBuf::from("/sys/fs/cgroup"),
+            security(),
+            BUDGET,
+            100,
+        );
+        let mut graph = EntityGraph::new("boot", "host", Timestamp::from_millis(1_000));
+        let _ = run(&mut collector, &mut graph, 2_000);
+
+        let counts = counting.counts();
+        assert!(
+            counts.dir_entries <= (BUDGET as u64) + 8,
+            "обход обязан прекратиться на бюджете, посещено записей: {}",
+            counts.dir_entries
+        );
+        assert_eq!(
+            graph.entities_of_kind(EntityKind::Process).count(),
+            BUDGET,
+            "в графе обязано быть ровно столько процессов, сколько разрешил бюджет"
+        );
+    }
     #[test]
     fn cmdline_can_be_disabled_entirely() {
         let mut security = security();

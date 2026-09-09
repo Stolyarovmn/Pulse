@@ -31,6 +31,14 @@ const MAX_DEPTH: usize = 8;
 /// Сколько дисков одной cgroup попадает в связи и метку `disks`.
 const MAX_LINKED_DISKS: usize = 8;
 
+/// Запас на файлы контроллеров в каталоге cgroup.
+///
+/// В одном каталоге лежат и подкаталоги-дети, и файлы вида `cpu.stat`,
+/// `memory.max`, `pids.current`. Бюджет считается по детям, поэтому чтение
+/// каталога обязано иметь запас на эти файлы: иначе лимит съедался бы ими и
+/// реальные дети терялись бы молча.
+const CONTROLLER_FILES_PER_CGROUP: usize = 64;
+
 /// Предыдущие значения счётчиков cgroup для производных величин.
 #[derive(Clone, Copy, Debug, Default)]
 struct CgroupPrev {
@@ -192,8 +200,8 @@ impl CgroupCollector {
         }
         let has_links = self
             .fs
-            .read_dir(&self.sys_root.join("dev/block"))
-            .is_ok_and(|entries| !entries.is_empty());
+            .read_dir_capped(&self.sys_root.join("dev/block"), 1)
+            .is_ok_and(|(entries, _)| !entries.is_empty());
         let mode = if has_links {
             DiskResolver::SysDevBlock
         } else {
@@ -324,7 +332,14 @@ impl CgroupCollector {
 
         // Дети: подкаталоги. Владелец не меняет иерархию — родителем остаётся cgroup.
         let _ = owner;
-        if let Ok(entries) = self.fs.read_dir(dir) {
+        // Бюджет применяется к самому чтению каталога: остаток лимита плюс
+        // запас на файлы контроллеров (`cpu.stat`, `memory.max` и прочие
+        // лежат в том же каталоге и детьми не являются).
+        let remaining = self
+            .max_cgroups
+            .saturating_sub(*processed)
+            .saturating_add(CONTROLLER_FILES_PER_CGROUP);
+        if let Ok((entries, _)) = self.fs.read_dir_capped(dir, remaining) {
             for entry in entries {
                 let child_name = entry.to_string_lossy().into_owned();
                 if child_name.starts_with('.')
@@ -1209,6 +1224,43 @@ mod tests {
             counting.counts().inode <= 5,
             "после лимита обход обязан остановиться, вызовы: {:?}",
             counting.calls()
+        );
+    }
+
+    /// PULSE-080 для cgroup: чтение каталога тоже ограничено бюджетом.
+    ///
+    /// Большой слайс (kubepods на плотной ноде) содержит тысячи детей. Читать
+    /// весь список, чтобы затем остановиться на `max_cgroups`, значит платить
+    /// за работу, которая заведомо не нужна.
+    #[test]
+    fn cgroup_child_listing_is_bounded_by_budget() {
+        const TOTAL: u64 = 5_000;
+        const BUDGET: usize = 4;
+
+        let mut fs = FixtureFs::new().inode("/sys/fs/cgroup", 1);
+        for index in 0..TOTAL {
+            fs = fs.inode(&format!("/sys/fs/cgroup/child-{index}.slice"), index + 2);
+        }
+        let counting = crate::test_support::CountingFs::new(Arc::new(fs));
+        let mut collector = CgroupCollector::new(
+            Arc::new(counting.clone()),
+            PathBuf::from("/sys/fs/cgroup"),
+            PathBuf::from("/sys"),
+            BUDGET,
+        );
+        let mut graph = EntityGraph::new("boot", "host", Timestamp::from_millis(1_000));
+        graph.begin_tick(Timestamp::from_millis(2_000));
+        let result = {
+            let mut ctx = CollectCtx::new(&mut graph, 1.0);
+            collector.collect(&mut ctx)
+        };
+        let _ = graph.end_tick();
+
+        assert!(matches!(result, Err(CollectError::Truncated { .. })));
+        let entries = counting.counts().dir_entries;
+        assert!(
+            entries < TOTAL,
+            "чтение каталога обязано остановиться на бюджете, посещено: {entries}"
         );
     }
 

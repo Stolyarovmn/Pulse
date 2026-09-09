@@ -111,27 +111,30 @@ fn read_descriptors(fs: &dyn FsSource, root: &Path, limit: usize) -> (Descriptor
     let mut sockets: Vec<u64> = Vec::new();
     let mut total = 0_usize;
 
-    let entries = match fs.read_dir(&root.join("fd")) {
-        Ok(entries) => entries,
-        Err(error) => {
-            // Отказ в правах и отсутствие процесса — разные факты. Первый
-            // означает «смотри из-под root», второй «процесс уже умер», и
-            // оператор обязан видеть, какой именно.
-            let restricted = matches!(error.kind(), io::ErrorKind::PermissionDenied);
-            return (
-                Descriptors {
-                    total,
-                    files,
-                    restricted,
-                },
-                sockets,
-            );
+    // Номера собираются потоково: имена дескрипторов как строки не нужны ни
+    // на шаг дольше разбора. Число `read_link` по-прежнему равно числу
+    // дескрипторов — это отдельная находка (PULSE-071).
+    let mut numbers: Vec<u32> = Vec::new();
+    let scanned = fs.scan_dir(&root.join("fd"), &mut |name| {
+        if let Ok(fd) = name.to_string_lossy().parse::<u32>() {
+            numbers.push(fd);
         }
-    };
-    let mut numbers: Vec<u32> = entries
-        .iter()
-        .filter_map(|name| name.to_string_lossy().parse::<u32>().ok())
-        .collect();
+        true
+    });
+    if let Err(error) = scanned {
+        // Отказ в правах и отсутствие процесса — разные факты. Первый
+        // означает «смотри из-под root», второй «процесс уже умер», и
+        // оператор обязан видеть, какой именно.
+        let restricted = matches!(error.kind(), io::ErrorKind::PermissionDenied);
+        return (
+            Descriptors {
+                total,
+                files,
+                restricted,
+            },
+            sockets,
+        );
+    }
     numbers.sort_unstable();
 
     for fd in numbers {

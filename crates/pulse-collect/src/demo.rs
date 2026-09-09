@@ -30,7 +30,7 @@
 //! не успевает закрыться до следующей деградации и висит вечно —
 //! это поймал `demo_scenario_opens_and_closes_a_problem_through_real_rules`.
 
-use std::ffi::OsString;
+use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -142,8 +142,8 @@ impl FsSource for DemoFs {
         self.with_scene(|scene| scene.read(path, cap))
     }
 
-    fn read_dir(&self, path: &Path) -> io::Result<Vec<OsString>> {
-        self.with_scene(|scene| scene.read_dir(path))
+    fn scan_dir(&self, path: &Path, visit: &mut dyn FnMut(&OsStr) -> bool) -> io::Result<()> {
+        self.with_scene(|scene| scene.scan_dir(path, visit))
     }
 
     fn read_link(&self, path: &Path) -> io::Result<PathBuf> {

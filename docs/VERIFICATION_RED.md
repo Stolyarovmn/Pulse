@@ -49,6 +49,7 @@
 | PULSE-086 | `ports_come_from_namespace_of_the_process_not_of_the_agent` + live netns inode probe | pulse-collect | inode слушающего сокета находился в `/proc/<pid>/net/tcp` и отсутствовал в `/proc/net/tcp` агента | FIXED в PR-06 |
 | PULSE-064 | `equal_display_names_of_distinct_units_do_not_fold_together` + `equal_process_names_without_owner_remain_separate` | pulse-tui | system/user `dbus.socket` склеивались в одну строку по display name | FIXED в PR-12 |
 | PULSE-065 | `main_process_is_oldest_not_smallest_pid` + подпись в `unit_resolves_processes_that_are_its_siblings` | pulse-tui | минимальный PID выбирал нового воркера после оборота счётчика и выдавал эвристику за фактический MainPID | FIXED в PR-12 |
+| PULSE-080 | `proc_walk_work_is_bounded_by_max_processes` + `cgroup_child_listing_is_bounded_by_budget` | pulse-collect | обход материализовал весь каталог и применял бюджет уже после: 20 000 записей `/proc` при лимите 64 | FIXED в PR-07c |
 | PULSE-001 | пять обязательных команд на `1.85.1` | workspace | `rustc 1.85.1 is not supported by: darling@0.24.1 requires rustc 1.88.0; instability@0.3.13 requires rustc 1.88` | FIXED в PR-01 |
 
 ### PULSE-039: почему тест зелёный
@@ -68,7 +69,6 @@ warm-слоя показала обратное: `History::rate` считает 
 | Finding | Причина | Куда уходит |
 |---|---|---|
 | PULSE-009 (TOCTOU между проверкой и `kill`) | нужен pidfd-путь в production API | BLOCKED_BY_DESIGN, PR-06 |
-| PULSE-080 (bounded `read_dir`) | `FsSource::read_dir` возвращает `Vec`, поэтому обход нельзя прервать снаружи; `CountingFs` уже готов измерять работу после появления потокового API | BLOCKED_BY_DESIGN, PR-07 |
 | PULSE-079 (медленный TUI держит замок истории) | нужен runtime-шов, отделяющий выборку истории от отрисовки | BLOCKED_BY_DESIGN, PR-09 |
 | PULSE-015 (page size 4096) | обычный x86_64 CI имеет ровно 4096 и дефект не проявляется | LIVE_REQUIRED, PR-10 |
 | PULSE-067 (ширина в колонках терминала) | нужен переход на unicode-width в собственных помощниках | BLOCKED_BY_DESIGN, PR-12 |

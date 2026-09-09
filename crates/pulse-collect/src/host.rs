@@ -14,6 +14,14 @@ use pulse_core::metric::ids;
 use crate::fs::{FsSource, FsSourceExt};
 use crate::parse;
 
+/// Бюджет обхода `/proc` для счёта процессов и потоков.
+///
+/// Хост-коллектор не имеет настройки: `max_processes` ограничивает подробный
+/// сбор по процессам, а здесь считаются только числа. Потолок нужен, чтобы
+/// один такт не превращался в обход каталога неизвестного размера; при его
+/// достижении метрики не публикуются, а не занижаются.
+const PROC_SCAN_CAP: usize = 65_536;
+
 /// Коллектор метрик уровня хоста.
 #[derive(Debug)]
 pub struct HostCollector {
@@ -249,25 +257,42 @@ impl HostCollector {
     }
 
     /// Число процессов и потоков: считается обходом каталога `/proc`.
+    ///
+    /// Два прохода вместо одного: читать `stat` внутри обхода нельзя, потому
+    /// что источник вправе держать замок на время обхода. Сначала имена под
+    /// бюджетом, затем чтения.
     fn collect_process_counts(&self, ctx: &mut CollectCtx<'_>) {
-        let Ok(entries) = self.fs.read_dir(Path::new(&self.proc_root)) else {
+        let Ok((names, truncated)) = self
+            .fs
+            .read_dir_capped(Path::new(&self.proc_root), PROC_SCAN_CAP)
+        else {
             return;
         };
         let mut processes = 0usize;
         let mut threads = 0f64;
-        for name in entries {
-            let name = name.to_string_lossy().into_owned();
-            if !name.chars().all(|c| c.is_ascii_digit()) || name.is_empty() {
+        for name in &names {
+            let name = name.to_string_lossy();
+            if name.is_empty() || !name.chars().all(|c| c.is_ascii_digit()) {
                 continue;
             }
             processes += 1;
             if let Some(text) = self.fs.read_opt(&self.path(&format!("{name}/stat"))) {
                 if let Some(stat) = parse::parse_proc_stat(&text) {
-                    threads += stat.num_threads.max(0) as f64;
+                    threads += stat.num_threads as f64;
                 }
             }
         }
         let host = ctx.host();
+        // Усечённый обход даёт заниженные числа, а заниженное число процессов
+        // хуже отсутствующего: по нему строят вывод «нагрузка упала». Поэтому
+        // при усечении метрики не публикуются вовсе.
+        if truncated {
+            tracing::debug!(
+                cap = PROC_SCAN_CAP,
+                "обход /proc усечён: счёт процессов и потоков не публикуется"
+            );
+            return;
+        }
         ctx.sample(host, ids::HOST_PROCS_TOTAL, processes as f64);
         if threads > 0.0 {
             ctx.sample(host, ids::HOST_THREADS_TOTAL, threads);

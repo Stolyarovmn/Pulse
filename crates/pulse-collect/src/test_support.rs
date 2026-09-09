@@ -7,7 +7,7 @@
 //! Модуль существует только под `#[cfg(test)]` и не входит в production path.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -28,6 +28,8 @@ pub(crate) struct FsCallCounts {
     pub read_link: u64,
     pub inode: u64,
     pub statfs: u64,
+    /// Сколько записей каталогов фактически посещено.
+    pub dir_entries: u64,
 }
 
 /// Операция в bounded-журнале вызовов.
@@ -38,6 +40,7 @@ pub(crate) enum FsOperation {
     ReadLink,
     Inode,
     StatFs,
+    DirEntry,
 }
 
 /// Один вызов источника файловой системы.
@@ -96,9 +99,12 @@ impl CountingFs {
                 FsOperation::ReadLink => &mut state.counts.read_link,
                 FsOperation::Inode => &mut state.counts.inode,
                 FsOperation::StatFs => &mut state.counts.statfs,
+                FsOperation::DirEntry => &mut state.counts.dir_entries,
             };
             *count = count.saturating_add(1);
-            if state.log.len() < MAX_CALL_LOG {
+            // Журнал не пишет каждую запись каталога: на большом каталоге он
+            // сам стал бы стоимостью, а для диагностики достаточно счётчика.
+            if state.log.len() < MAX_CALL_LOG && operation != FsOperation::DirEntry {
                 state.log.push(FsCall {
                     operation,
                     path: normalize(path),
@@ -129,9 +135,15 @@ impl FsSource for CountingFs {
         self.inner.read(path, cap)
     }
 
-    fn read_dir(&self, path: &Path) -> io::Result<Vec<OsString>> {
+    fn scan_dir(&self, path: &Path, visit: &mut dyn FnMut(&OsStr) -> bool) -> io::Result<()> {
         self.note(FsOperation::ReadDir, path, None);
-        self.inner.read_dir(path)
+        // Считаются и посещённые записи: «сколько раз открыли каталог» не
+        // отвечает на вопрос «сколько работы сделано», а бюджет измеряется
+        // именно работой.
+        self.inner.scan_dir(path, &mut |name| {
+            self.note(FsOperation::DirEntry, path, None);
+            visit(name)
+        })
     }
 
     fn read_link(&self, path: &Path) -> io::Result<PathBuf> {
@@ -307,7 +319,7 @@ impl FsSource for ScriptedFs {
         }
     }
 
-    fn read_dir(&self, path: &Path) -> io::Result<Vec<OsString>> {
+    fn scan_dir(&self, path: &Path, visit: &mut dyn FnMut(&OsStr) -> bool) -> io::Result<()> {
         let scripted = self.with_scripts(|scripts| {
             scripts
                 .dirs
@@ -315,13 +327,20 @@ impl FsSource for ScriptedFs {
                 .and_then(Sequence::next)
         });
         match scripted {
-            Some(ScriptedDir::Entries(entries)) => Ok(entries),
+            Some(ScriptedDir::Entries(entries)) => {
+                for entry in entries {
+                    if !visit(&entry) {
+                        break;
+                    }
+                }
+                Ok(())
+            }
             Some(ScriptedDir::NotFound) => Err(error(io::ErrorKind::NotFound, path)),
             Some(ScriptedDir::PermissionDenied) => {
                 Err(error(io::ErrorKind::PermissionDenied, path))
             }
             Some(ScriptedDir::Io(kind)) => Err(error(kind, path)),
-            None => self.base.read_dir(path),
+            None => self.base.scan_dir(path, visit),
         }
     }
 
@@ -363,7 +382,7 @@ fn error(kind: io::ErrorKind, path: &Path) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fs::FixtureFs;
+    use crate::fs::{FixtureFs, FsSourceExt};
 
     #[test]
     fn counting_fs_counts_resets_and_bounds_log() {
@@ -381,7 +400,9 @@ mod tests {
             fs.read_link(Path::new("/proc/link")).expect("read_link"),
             PathBuf::from("/target")
         );
-        let _ = fs.read_dir(Path::new("/proc")).expect("read_dir");
+        let (entries, _) = fs
+            .read_dir_capped(Path::new("/proc"), 16)
+            .expect("scan_dir");
         assert_eq!(fs.inode(Path::new("/proc")).expect("inode"), 7);
         assert_eq!(fs.statfs(Path::new("/")).expect("statfs").total, 100);
 
@@ -393,10 +414,13 @@ mod tests {
                 read_link: 1,
                 inode: 1,
                 statfs: 1,
+                // Записи каталога считаются отдельно: бюджет измеряется
+                // работой, а не числом открытий каталога.
+                dir_entries: entries.len() as u64,
             }
         );
         let calls = fs.calls();
-        assert_eq!(calls.len(), 5);
+        assert_eq!(calls.len(), 5, "записи каталога в журнал не пишутся");
         assert!(calls.iter().any(|call| {
             call.operation == FsOperation::Read && call.path == "/proc/a" && call.cap == Some(2)
         }));
@@ -471,11 +495,13 @@ mod tests {
             io::ErrorKind::NotFound
         );
         assert_eq!(
-            fs.read_dir(Path::new("/proc")).expect("first dir"),
+            fs.read_dir_capped(Path::new("/proc"), 16)
+                .expect("first dir")
+                .0,
             vec![OsString::from("123")]
         );
         assert_eq!(
-            fs.read_dir(Path::new("/proc"))
+            fs.read_dir_capped(Path::new("/proc"), 16)
                 .expect_err("second dir")
                 .kind(),
             io::ErrorKind::Interrupted
@@ -546,10 +572,10 @@ mod tests {
         );
 
         let dir_kinds = [
-            fs.read_dir(Path::new("/proc/dir"))
+            fs.read_dir_capped(Path::new("/proc/dir"), 8)
                 .expect_err("dir gone")
                 .kind(),
-            fs.read_dir(Path::new("/proc/dir"))
+            fs.read_dir_capped(Path::new("/proc/dir"), 8)
                 .expect_err("dir denied")
                 .kind(),
         ];

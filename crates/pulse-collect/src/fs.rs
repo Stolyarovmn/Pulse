@@ -12,7 +12,7 @@
 //!    гигабайтный `cmdline`) читал бы неограниченно долго.
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -52,8 +52,22 @@ pub trait FsSource: Send + Sync + std::fmt::Debug {
     /// Читает не более `cap` байт файла.
     fn read(&self, path: &Path, cap: usize) -> io::Result<Vec<u8>>;
 
-    /// Имена элементов каталога (без `.` и `..`).
-    fn read_dir(&self, path: &Path) -> io::Result<Vec<OsString>>;
+    /// Обходит каталог, отдавая имена по одному (без `.` и `..`).
+    ///
+    /// Потоковый, а не `Vec`, именно из-за бюджетов: обход `/proc` на хосте с
+    /// десятками тысяч процессов сначала материализовал весь список, и только
+    /// потом коллектор применял `max_processes`. То есть лимит ограничивал
+    /// обработку, но не работу и не память - агент платил за весь каталог
+    /// прежде, чем решить, что столько ему не нужно.
+    ///
+    /// `visit` возвращает `false`, чтобы прекратить обход немедленно.
+    ///
+    /// **Внутри `visit` обращаться к этому же источнику запрещено.**
+    /// Реализация вправе держать внутренний замок на время обхода (так делает
+    /// демо-источник), поэтому вложенное чтение даёт взаимную блокировку, а не
+    /// ошибку. Нужны данные по каждой записи — сначала соберите имена
+    /// бюджетом, затем читайте.
+    fn scan_dir(&self, path: &Path, visit: &mut dyn FnMut(&OsStr) -> bool) -> io::Result<()>;
 
     /// Цель символической ссылки.
     fn read_link(&self, path: &Path) -> io::Result<PathBuf>;
@@ -93,6 +107,35 @@ pub trait FsSourceExt: FsSource {
     fn read_opt(&self, path: &Path) -> Option<String> {
         self.read_string(path).ok()
     }
+
+    /// Имена элементов каталога, не более `cap`.
+    ///
+    /// Возвращает признак усечения: «мы увидели ровно столько, сколько
+    /// разрешил бюджет» и «в каталоге ровно столько» — разные факты, и
+    /// потребитель обязан их различать.
+    fn read_dir_capped(&self, path: &Path, cap: usize) -> io::Result<(Vec<OsString>, bool)> {
+        let mut names: Vec<OsString> = Vec::new();
+        let mut truncated = false;
+        self.scan_dir(path, &mut |name| {
+            if names.len() >= cap {
+                truncated = true;
+                return false;
+            }
+            names.push(name.to_os_string());
+            true
+        })?;
+        Ok((names, truncated))
+    }
+
+    /// Число элементов каталога без их материализации.
+    fn count_dir(&self, path: &Path) -> io::Result<usize> {
+        let mut count = 0_usize;
+        self.scan_dir(path, &mut |_| {
+            count += 1;
+            true
+        })?;
+        Ok(count)
+    }
 }
 
 impl<T: FsSource + ?Sized> FsSourceExt for T {}
@@ -111,16 +154,20 @@ impl FsSource for RealFs {
         Ok(buf)
     }
 
-    fn read_dir(&self, path: &Path) -> io::Result<Vec<OsString>> {
-        let mut names = Vec::new();
+    fn scan_dir(&self, path: &Path, visit: &mut dyn FnMut(&OsStr) -> bool) -> io::Result<()> {
+        // `std::fs::read_dir` — ленивый итератор: имена берутся порциями из
+        // `getdents64` по мере обхода, поэтому ранний выход экономит и
+        // syscall, и память.
         for entry in std::fs::read_dir(path)? {
-            match entry {
-                Ok(entry) => names.push(entry.file_name()),
+            let Ok(entry) = entry else {
                 // Каталог мог измениться во время обхода — это не ошибка такта.
-                Err(_) => continue,
+                continue;
+            };
+            if !visit(&entry.file_name()) {
+                return Ok(());
             }
         }
-        Ok(names)
+        Ok(())
     }
 
     fn read_link(&self, path: &Path) -> io::Result<PathBuf> {
@@ -293,7 +340,7 @@ impl FsSource for FixtureFs {
         }
     }
 
-    fn read_dir(&self, path: &Path) -> io::Result<Vec<OsString>> {
+    fn scan_dir(&self, path: &Path, visit: &mut dyn FnMut(&OsStr) -> bool) -> io::Result<()> {
         if self.denied.contains_key(&key_of(path)) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -330,8 +377,15 @@ impl FsSource for FixtureFs {
         if names.is_empty() && !self.inodes.contains_key(&key_of(path)) {
             return Err(io::Error::new(io::ErrorKind::NotFound, key_of(path)));
         }
+        // Порядок фиксирован: фикстура обязана давать воспроизводимый обход,
+        // иначе тест на бюджет зависел бы от порядка ключей карты.
         names.sort();
-        Ok(names.into_iter().map(OsString::from).collect())
+        for name in names {
+            if !visit(OsStr::new(&name)) {
+                break;
+            }
+        }
+        Ok(())
     }
 
     fn read_link(&self, path: &Path) -> io::Result<PathBuf> {
@@ -382,30 +436,50 @@ mod tests {
     }
 
     #[test]
-    fn read_dir_lists_immediate_children_only() {
+    fn scan_dir_lists_immediate_children_only() {
         let fs = FixtureFs::new()
             .file("/proc/1/stat", "x")
             .file("/proc/1/status", "x")
             .file("/proc/2/stat", "x")
             .file("/proc/uptime", "x");
-        let mut names: Vec<String> = fs
-            .read_dir(Path::new("/proc"))
-            .unwrap()
+        let (names, truncated) = fs.read_dir_capped(Path::new("/proc"), 16).unwrap();
+        let mut names: Vec<String> = names
             .into_iter()
             .map(|n| n.to_string_lossy().into_owned())
             .collect();
         names.sort();
         assert_eq!(names, vec!["1", "2", "uptime"]);
+        assert!(!truncated, "каталог меньше бюджета: усечения нет");
+    }
+
+    /// Бюджет обязан быть отличим от фактического размера каталога: иначе
+    /// «увидели три записи» и «в каталоге три записи» сливаются в одно.
+    #[test]
+    fn capped_scan_reports_truncation_and_stops_early() {
+        let fs = FixtureFs::new()
+            .file("/proc/1/stat", "x")
+            .file("/proc/2/stat", "x")
+            .file("/proc/3/stat", "x");
+        let (names, truncated) = fs.read_dir_capped(Path::new("/proc"), 2).unwrap();
+        assert_eq!(names.len(), 2, "бюджет обязан ограничить выдачу");
+        assert!(truncated, "усечение обязано быть заявлено");
+
+        let mut visited = 0_usize;
+        fs.scan_dir(Path::new("/proc"), &mut |_| {
+            visited += 1;
+            visited < 2
+        })
+        .unwrap();
+        assert_eq!(visited, 2, "ранний выход обязан прекратить обход");
     }
 
     #[test]
-    fn read_dir_sees_directories_declared_only_by_inode() {
+    fn scan_dir_sees_directories_declared_only_by_inode() {
         let fs = FixtureFs::new()
             .inode("/sys/fs/cgroup/system.slice", 42)
             .file("/sys/fs/cgroup/cpu.stat", "usage_usec 1");
-        let names: Vec<String> = fs
-            .read_dir(Path::new("/sys/fs/cgroup"))
-            .unwrap()
+        let (names, _) = fs.read_dir_capped(Path::new("/sys/fs/cgroup"), 16).unwrap();
+        let names: Vec<String> = names
             .into_iter()
             .map(|n| n.to_string_lossy().into_owned())
             .collect();
