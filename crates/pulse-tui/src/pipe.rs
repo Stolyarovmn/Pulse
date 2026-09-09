@@ -375,8 +375,10 @@ fn process_scope(snapshot: &Snapshot, entity: EntityId) -> Option<EntityId> {
 /// Оператор открывает пайп на сервисе или контейнере, а `exe`, порты и файлы
 /// живут у процесса. Раньше такая ветка отвечала «не процесс», то есть
 /// перекладывала на человека работу спуска, которую цепочка обязана делать
-/// сама. Берётся процесс с наименьшим pid: у сервиса это, как правило,
-/// главный процесс, и выбор детерминирован.
+/// сама. Главный кандидат — самый старый по `start_ticks`; PID используется
+/// лишь как детерминированный tie-break, если процессы стартовали в один тик.
+/// Выбирать минимальный PID нельзя: после оборота счётчика ядро выдаёт новому
+/// воркеру малый номер, хотя мастер с большим PID всё ещё жив.
 #[must_use]
 pub fn main_process(
     snapshot: &Snapshot,
@@ -398,7 +400,9 @@ pub fn main_process(
         }
         for child in snapshot.children(current) {
             if let Some(identity) = process_identity(snapshot, child.id) {
-                if best.is_none_or(|(_, known)| identity.pid < known.pid) {
+                if best.is_none_or(|(_, known)| {
+                    (identity.start_ticks, identity.pid) < (known.start_ticks, known.pid)
+                }) {
                     best = Some((child.id, identity));
                 }
             } else {
@@ -1181,7 +1185,7 @@ mod tests {
         assert_eq!(
             main_process(&snapshot, unit).map(|(_, identity)| identity.pid),
             Some(262),
-            "у unit обязан находиться главный процесс с наименьшим pid"
+            "при одинаковом start_ticks минимальный pid — детерминированный tie-break"
         );
         let listed = procs(&snapshot, unit);
         assert!(
@@ -1192,6 +1196,60 @@ mod tests {
             procs(&snapshot, host),
             vec!["процессов нет".to_string()],
             "у хоста главного процесса нет: это бессмысленный ответ"
+        );
+    }
+
+    /// PULSE-065: минимальный PID не означает самый старый процесс.
+    ///
+    /// После оборота счётчика PID новый воркер получает маленький номер, пока
+    /// старый мастер с большим номером ещё жив. Пайп обязан выбрать старейшую
+    /// инкарнацию, иначе `exe`, порты и файлы будут принадлежать воркеру.
+    #[test]
+    fn main_process_is_oldest_not_smallest_pid() {
+        use pulse_core::{AgentStats, EntityGraph, EntityKey, EntitySpec, LatestValues, Timestamp};
+
+        let mut graph = EntityGraph::new("boot", "host", Timestamp::from_millis(1_000));
+        graph.begin_tick(Timestamp::from_millis(2_000));
+        let host = graph.host();
+        let cgroup = graph.upsert(
+            EntitySpec::new(EntityKey::Cgroup { cgroup_id: 8 }, "wrapped.service").parent(host),
+        );
+        let unit = graph.upsert(
+            EntitySpec::new(
+                EntityKey::Unit {
+                    name: "wrapped.service".into(),
+                },
+                "wrapped.service",
+            )
+            .parent(cgroup),
+        );
+        let candidates = [
+            // Мастер: большой PID, но стартовал раньше.
+            (4_194_300, 10_u64),
+            // Воркеры после оборота PID.
+            (120, 20_u64),
+            (121, 20_u64),
+        ];
+        for (pid, start_ticks) in candidates {
+            let _ = graph.upsert(
+                EntitySpec::new(EntityKey::Process { pid, start_ticks }, "worker").parent(cgroup),
+            );
+        }
+        let _ = graph.end_tick();
+        let snapshot = Snapshot::build(
+            &graph,
+            LatestValues::new(),
+            Vec::new(),
+            Vec::new(),
+            AgentStats::default(),
+            "host",
+            "boot",
+        );
+
+        assert_eq!(
+            main_process(&snapshot, unit).map(|(_, identity)| identity.pid),
+            Some(4_194_300),
+            "главным обязан быть старейший процесс, а не минимальный PID"
         );
     }
 

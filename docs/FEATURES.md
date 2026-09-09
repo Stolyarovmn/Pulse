@@ -111,6 +111,7 @@ cgroup 90..=149, process 150..=189, agent 190..=219).
 | Идентичность процесса сквозная: метка ряда экспорта, кэш деталей и чтение `/proc` работают по паре `(pid, start_ticks)`, а смена процесса под номером заявляется оператору | `pulse-export/src/render.rs` (`label_fragment`), `pulse-core/src/details.rs` (`ProcessIdentity`, `DetailsCache`), `pulse-collect/src/details.rs` | реализовано |
 | Слушающие порты берутся из network namespace исследуемого процесса (`/proc/<pid>/net/*`), а не агента | `pulse-collect/src/details.rs` (`listening_ports`) | реализовано |
 | Одна беда — один пункт: метрики cgroup дублируются на владельца намеренно, поэтому правило выбирает владельца, но оставляет проблему на cgroup, если владелец значения не несёт | `pulse-engine/src/rules.rs` (`owner_reports`) | реализовано |
+| Главный процесс сервиса выбирается по минимальному `(start_ticks, pid)`: старейшая инкарнация побеждает, PID — только tie-break после одновременного старта | `pulse-tui/src/pipe.rs` (`main_process`) | реализовано |
 
 ## 7. CLI (`crates/pulse-cli`)
 
