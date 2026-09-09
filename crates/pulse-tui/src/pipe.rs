@@ -316,7 +316,8 @@ pub fn build(
     state: &PipeState,
 ) -> Vec<Node> {
     // Детали живут у процесса, а пайп открывают и на сервисе: разрешаем
-    // главный процесс один раз и подписываем, чьи это факты.
+    // старейшего кандидата один раз и подписываем, что это эвристика, а не
+    // фактический MainPID из systemd.
     let owner_pid = main_process(snapshot, entity).map(|(_, identity)| identity.pid);
     let self_process = process_identity(snapshot, entity).is_some();
     Branch::ALL
@@ -450,7 +451,7 @@ fn values_for(
     // оператор прочитает `exe` сервиса как «единственный», а это главный
     // процесс из нескольких.
     let note = match (self_process, owner_pid) {
-        (false, Some(pid)) => Some(format!("главный процесс pid {pid}")),
+        (false, Some(pid)) => Some(format!("кандидат на главный процесс pid {pid}")),
         _ => None,
     };
     match branch {
@@ -1196,6 +1197,23 @@ mod tests {
             procs(&snapshot, host),
             vec!["процессов нет".to_string()],
             "у хоста главного процесса нет: это бессмысленный ответ"
+        );
+        let details = ProcessDetails {
+            exe: Some("/usr/sbin/angie".to_string()),
+            ..ProcessDetails::default()
+        };
+        let state = state_with(&[Branch::Exe]);
+        let nodes = build(&snapshot, unit, Some(&details), &state);
+        let exe = nodes
+            .iter()
+            .find(|node| node.branch == Branch::Exe)
+            .expect("ветка exe");
+        assert!(
+            exe.values
+                .iter()
+                .any(|value| value == "кандидат на главный процесс pid 262"),
+            "эвристика обязана быть явно названа оператору: {:?}",
+            exe.values
         );
     }
 

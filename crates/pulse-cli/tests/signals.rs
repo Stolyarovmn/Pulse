@@ -173,3 +173,64 @@ fn sigterm_exits_within_two_seconds() {
 fn sigint_exits_within_two_seconds() {
     signal_and_wait("-INT");
 }
+
+/// Сигнал сразу после объявленной готовности обязан быть штатным завершением.
+///
+/// Живой дефект: handler ставился после первого такта и запуска exporter, а
+/// первый такт на нагруженном хосте длится сотни миллисекунд. Сигнал в это
+/// окно применял действие ядра по умолчанию, и процесс умирал с
+/// `signal: 15 (SIGTERM)` вместо кода 0, минуя оба shutdown.
+///
+/// Синхронизация по строке готовности, а не по задержке: длительность окна
+/// зависит от машины, и любой `sleep` давал бы либо ложное падение, либо
+/// пропуск дефекта. До этой строки контракта нет - между `exec` и
+/// регистрацией handler окно физически неизбежно.
+#[test]
+fn signal_right_after_readiness_is_still_graceful() {
+    use std::io::{BufRead, BufReader};
+
+    let config = config_file();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_pulse"))
+        .args(["--config", config.to_str().expect("utf8 path"), "serve"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn pulse serve");
+
+    let stdout = child.stdout.take().expect("stdout pipe");
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    reader.read_line(&mut line).expect("read readiness line");
+    assert!(
+        line.contains("сигналы перехвачены"),
+        "первой строкой обязана быть готовность к сигналам: {line:?}"
+    );
+
+    // Exporter ещё не поднят: строка про listening печатается после первого
+    // такта, то есть сигнал попадает ровно в проблемное окно.
+    let sent = Command::new("/bin/kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("invoke kill");
+    assert!(sent.success(), "kill -TERM failed");
+
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("try_wait after signal") {
+            break status;
+        }
+        if started.elapsed() >= Duration::from_secs(5) {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = fs::remove_file(&config);
+            panic!("pulse не завершился за 5s после сигнала на старте");
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    let _ = fs::remove_file(&config);
+    assert!(
+        status.success(),
+        "сигнал сразу после готовности обязан быть штатным завершением, получено {status}"
+    );
+}

@@ -253,6 +253,15 @@ fn serve(config: &PulseConfig, demo: bool) -> Result<(), Box<dyn Error>> {
     if !config.export.enabled {
         return Err("команда serve требует export.enabled = true".into());
     }
+    // Handler обязан стоять до первого сбора и запуска exporter. Первый такт
+    // на нагруженном хосте может длиться больше секунды; сигнал в это окно
+    // раньше применял действие ядра по умолчанию и убивал процесс напрямую,
+    // минуя exporter.shutdown/runtime.shutdown.
+    let terminate = install_signal_flag()?;
+    // Готовность объявляется наблюдаемо: с этого момента сигнал переводится в
+    // штатное завершение, а не в действие ядра по умолчанию. Оператору строка
+    // говорит, что Ctrl-C уже безопасен, ещё до первого такта.
+    println!("pulse: сигналы перехвачены, идёт первый сбор");
     let runtime = AgentRuntime::start_with_fs(config, source_fs(config, demo))?;
     let _ = runtime.wait_for_tick(1, tick_timeout(config))?;
     let exporter = pulse_export::spawn(&config.export, runtime.source())?;
@@ -262,7 +271,6 @@ fn serve(config: &PulseConfig, demo: bool) -> Result<(), Box<dyn Error>> {
     // Сигнал переводится в штатное завершение: поток экспорта останавливается,
     // поток сбора присоединяется. Иначе процесс умирает посреди такта и в
     // журнале это выглядит как сбой, а не как остановка по команде.
-    let terminate = install_signal_flag()?;
     while !terminate.load(AtomicOrdering::Relaxed) {
         thread::park_timeout(Duration::from_millis(200));
     }
