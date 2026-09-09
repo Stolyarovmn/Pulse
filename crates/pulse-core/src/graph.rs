@@ -75,6 +75,17 @@ pub enum CollectError {
     },
     #[error("подсистема недоступна: {0}")]
     Unavailable(&'static str),
+    /// Сбор дал корректный, но неполный результат из-за настроенного бюджета.
+    ///
+    /// Это не `Unavailable`: часть наблюдений уже собрана. Отдельный вариант
+    /// нужен, чтобы runtime заявил деградацию оператору и самометрикой, а не
+    /// выдал отсутствие сущностей за здоровое состояние.
+    #[error("{source_name}: обход усечён, достигнут {budget}={limit}")]
+    Truncated {
+        source_name: &'static str,
+        budget: &'static str,
+        limit: usize,
+    },
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

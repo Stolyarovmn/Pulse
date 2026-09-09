@@ -45,6 +45,7 @@
 | PULSE-084 | `audit_red_host_collector_reports_missing_critical_source` | pulse-collect | `отсутствие /proc/stat обязано быть заявлено как отказ сбора, получено Ok и 0 ошибок` | PROMOTED в PR-02 |
 | PULSE-070 | `audit_red_process_export_keeps_incarnation_identity` | pulse-export | `идентичность ряда обязана включать start_ticks: ["pulse_process_cpu_cores{pid=\"123\"}", "pulse_process_cpu_cores{pid=\"123\"}"]` | PROMOTED в PR-06 |
 | PULSE-039 | `audit_red_counter_rate_through_warm_layer` | pulse-store | — | UNEXPECTED_GREEN → PROMOTED (см. ниже) |
+| PULSE-066 | `cgroup_limit_stops_the_walk_and_reports_truncation` + `repeated_truncation_preserves_unvisited_entities_and_baselines` | pulse-collect | молчаливое усечение выдавало частичный граф за полный и после двух тактов удаляло непосещённые сущности | FIXED в PR-07b |
 | PULSE-001 | пять обязательных команд на `1.85.1` | workspace | `rustc 1.85.1 is not supported by: darling@0.24.1 requires rustc 1.88.0; instability@0.3.13 requires rustc 1.88` | FIXED в PR-01 |
 
 ### PULSE-039: почему тест зелёный
@@ -68,7 +69,6 @@ warm-слоя показала обратное: `History::rate` считает 
 | PULSE-080 (bounded `read_dir`) | `FsSource::read_dir` возвращает `Vec`, поэтому обход нельзя прервать снаружи; `CountingFs` уже готов измерять работу после появления потокового API | BLOCKED_BY_DESIGN, PR-07 |
 | PULSE-079 (медленный TUI держит замок истории) | нужен runtime-шов, отделяющий выборку истории от отрисовки | BLOCKED_BY_DESIGN, PR-09 |
 | PULSE-015 (page size 4096) | обычный x86_64 CI имеет ровно 4096 и дефект не проявляется | LIVE_REQUIRED, PR-10 |
-| PULSE-066 (полнота обхода cgroup) | нужен тип результата с признаком усечения | BLOCKED_BY_DESIGN, PR-07 |
 | PULSE-064 (склейка сущностей при свёртке) | нужен `LogicalObjectKey` вместо display name | BLOCKED_BY_DESIGN, PR-12 |
 | PULSE-065 («главный процесс» по минимальному PID) | нужен фактический MainPID или явный признак догадки | BLOCKED_BY_DESIGN, PR-12 |
 | PULSE-067 (ширина в колонках терминала) | нужен переход на unicode-width в собственных помощниках | BLOCKED_BY_DESIGN, PR-12 |

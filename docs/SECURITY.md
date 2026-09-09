@@ -295,7 +295,7 @@ RLE/AL) — всё это способно переформатировать в
 | Длина отображаемой строки | `MAX_DISPLAY_LEN = 256` | `pulse-core/src/redact.rs` |
 | Лейблы сущности | `16` шт × `512` байт | `pulse-core/src/entity.rs` `Labels` |
 | Число процессов за такт | `max_processes` (`.max(1)`) | `pulse-collect/src/process.rs` |
-| cgroup | `MAX_DEPTH = 8`, `max_cgroups` (`.max(1)`) | `pulse-collect/src/cgroup.rs` |
+| cgroup | `MAX_DEPTH = 8`, `max_cgroups` (`.max(1)`); достижение потолка возвращает `CollectError::Truncated`, сохраняет непосещённые сущности как UNKNOWN и не сбрасывает baseline счётчиков | `pulse-collect/src/cgroup.rs`, `pulse-core/src/graph.rs` |
 | История | `store.max_bytes = 64 MiB` по умолчанию; сначала сокращается `Warm`, затем `Hot` до двух тактов | `pulse-store::History::enforce_memory_ceiling` |
 | Rate-limit таблица | `MAX_TRACKED_ADDRESSES = 1024` | `pulse-export/src/limits.rs` |
 | Бюджет ответа | `16 MiB` / `100 000 строк` | `pulse-export/src/limits.rs` `Budget` |

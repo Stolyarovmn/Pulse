@@ -138,6 +138,30 @@ pub struct CgroupCollector {
     disk_by_device: HashMap<String, String>,
 }
 
+/// Причина неполного обхода. `None` из `walk` означает полный результат.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TraversalLimit {
+    Depth,
+    Groups,
+}
+
+impl TraversalLimit {
+    fn into_error(self, collector: &CgroupCollector) -> CollectError {
+        match self {
+            Self::Depth => CollectError::Truncated {
+                source_name: "cgroup",
+                budget: "max_depth",
+                limit: MAX_DEPTH,
+            },
+            Self::Groups => CollectError::Truncated {
+                source_name: "cgroup",
+                budget: "max_cgroups",
+                limit: collector.max_cgroups,
+            },
+        }
+    }
+}
+
 impl CgroupCollector {
     #[must_use]
     pub fn new(
@@ -246,13 +270,16 @@ impl CgroupCollector {
         depth: usize,
         processed: &mut usize,
         seen: &mut HashSet<u64>,
-    ) {
-        if depth > MAX_DEPTH || *processed >= self.max_cgroups {
-            return;
+    ) -> Option<TraversalLimit> {
+        if depth > MAX_DEPTH {
+            return Some(TraversalLimit::Depth);
+        }
+        if *processed >= self.max_cgroups {
+            return Some(TraversalLimit::Groups);
         }
 
         let Ok(inode) = self.fs.inode(dir) else {
-            return;
+            return None;
         };
         *processed += 1;
         let _ = seen.insert(inode);
@@ -316,7 +343,7 @@ impl CgroupCollector {
                     continue;
                 }
                 let child_rel = format!("{}/{}", rel_path.trim_end_matches('/'), child_name);
-                self.walk(
+                if let Some(limit) = self.walk(
                     ctx,
                     &child_dir,
                     &child_rel,
@@ -324,9 +351,15 @@ impl CgroupCollector {
                     depth + 1,
                     processed,
                     seen,
-                );
+                ) {
+                    // Бюджет глобальный для одного обхода: после его исчерпания
+                    // нельзя продолжать проверять соседей и платить inode-read
+                    // за каждый из них. Один признак поднимается до `collect`.
+                    return Some(limit);
+                }
             }
         }
+        None
     }
 
     /// Собирает метрики одной cgroup. Возвращает производные величины,
@@ -665,12 +698,36 @@ impl Collector for CgroupCollector {
             return Err(CollectError::Unavailable("cgroup v2 root"));
         }
         let host = ctx.host();
+        // Если обход окажется неполным, непосещённые сущности нельзя объявлять
+        // исчезнувшими: мы не наблюдали их отсутствие. Снимок старых id
+        // снимается до обхода и используется только при усечении.
+        let mut previously_known: Vec<EntityId> = Vec::new();
+        for kind in [
+            EntityKind::Cgroup,
+            EntityKind::Unit,
+            EntityKind::Container,
+            EntityKind::Pod,
+        ] {
+            previously_known.extend(ctx.entities_of_kind(kind).map(|entity| entity.id));
+        }
         let mut processed = 0usize;
         // Каталог cgroup исчезает вместе с unit или контейнером, а его inode
         // ядро переиспользует. Без чистки карта прошлых значений росла бы весь
         // срок жизни агента на хосте с churn контейнеров.
         let mut seen: HashSet<u64> = HashSet::with_capacity(self.previous.len().max(16));
-        self.walk(ctx, &root, "", host, 0, &mut processed, &mut seen);
+        let truncated = self.walk(ctx, &root, "", host, 0, &mut processed, &mut seen);
+        if let Some(limit) = truncated {
+            // Непосещённое при неполном обходе — UNKNOWN, не «удалено». Touch
+            // не подставляет старые метрики как свежие; он только не даёт
+            // породить ложные Deleted/Reparented и потерять историю сущности.
+            for id in previously_known {
+                ctx.touch(id);
+            }
+            // Baseline счётчиков непосещённых cgroup тоже сохраняется: удалить
+            // его сейчас означало бы ложный скачок rate при следующем полном
+            // обходе.
+            return Err(limit.into_error(self));
+        }
         self.previous.retain(|inode, _| seen.contains(inode));
         Ok(())
     }
@@ -1096,7 +1153,7 @@ mod tests {
     }
 
     #[test]
-    fn cgroup_limit_stops_the_walk() {
+    fn cgroup_limit_stops_the_walk_and_reports_truncation() {
         let fs = Arc::new(tree(1_000, 0, 0));
         let mut collector = CgroupCollector::new(
             fs,
@@ -1105,9 +1162,145 @@ mod tests {
             2,
         );
         let mut graph = EntityGraph::new("boot", "host", Timestamp::from_millis(1_000));
-        let _ = run(&mut collector, &mut graph, 2_000);
+        graph.begin_tick(Timestamp::from_millis(2_000));
+        let result = {
+            let mut ctx = CollectCtx::new(&mut graph, 1.0);
+            collector.collect(&mut ctx)
+        };
+        let _ = graph.end_tick();
+
+        assert!(matches!(
+            result,
+            Err(CollectError::Truncated {
+                source_name: "cgroup",
+                budget: "max_cgroups",
+                limit: 2
+            })
+        ));
         let count = graph.entities_of_kind(EntityKind::Cgroup).count();
         assert!(count <= 2, "обработано {count} групп при лимите 2");
+    }
+
+    /// После достижения глобального лимита DFS обязан прекратиться целиком,
+    /// а не продолжать inode-проверку каждого оставшегося соседа.
+    #[test]
+    fn cgroup_limit_stops_issuing_inode_reads() {
+        let mut fs = FixtureFs::new().inode("/sys/fs/cgroup", 1);
+        for index in 0..100_u64 {
+            let path = format!("/sys/fs/cgroup/group-{index}.slice");
+            fs = fs.inode(&path, index + 2);
+        }
+        let counting = crate::test_support::CountingFs::new(Arc::new(fs));
+        let mut collector = CgroupCollector::new(
+            Arc::new(counting.clone()),
+            PathBuf::from("/sys/fs/cgroup"),
+            PathBuf::from("/sys"),
+            2,
+        );
+        let mut graph = EntityGraph::new("boot", "host", Timestamp::from_millis(1_000));
+        graph.begin_tick(Timestamp::from_millis(2_000));
+        let result = {
+            let mut ctx = CollectCtx::new(&mut graph, 1.0);
+            collector.collect(&mut ctx)
+        };
+
+        assert!(matches!(result, Err(CollectError::Truncated { .. })));
+        assert!(
+            counting.counts().inode <= 5,
+            "после лимита обход обязан остановиться, вызовы: {:?}",
+            counting.calls()
+        );
+    }
+
+    /// Повторный неполный обход не является доказательством удаления.
+    /// Без touch старые сущности пережили бы один grace-такт, а на втором
+    /// получили ложный `Deleted`; baseline rate тоже был бы забыт.
+    #[test]
+    fn repeated_truncation_preserves_unvisited_entities_and_baselines() {
+        let fs = Arc::new(tree(1_000, 10, 3));
+        let mut collector = CgroupCollector::new(
+            fs,
+            PathBuf::from("/sys/fs/cgroup"),
+            PathBuf::from("/sys"),
+            100,
+        );
+        let mut graph = EntityGraph::new("boot", "host", Timestamp::from_millis(1_000));
+        let _ = run(&mut collector, &mut graph, 2_000);
+        let entities_before = graph.entities().count();
+        let baselines_before = collector.previous.len();
+        assert!(
+            entities_before > 3,
+            "фикстура обязана содержать несколько cgroup"
+        );
+        assert!(
+            baselines_before > 2,
+            "фикстура обязана создать baseline счётчиков"
+        );
+
+        collector.max_cgroups = 2;
+        for at in [3_000, 4_000] {
+            graph.begin_tick(Timestamp::from_millis(at));
+            let result = {
+                let mut ctx = CollectCtx::new(&mut graph, 1.0);
+                collector.collect(&mut ctx)
+            };
+            assert!(matches!(result, Err(CollectError::Truncated { .. })));
+            let batch = graph.end_tick();
+            assert!(
+                batch
+                    .events
+                    .iter()
+                    .all(|event| event.kind != pulse_core::EventKind::Deleted),
+                "неполный обход не доказывает удаление: {:?}",
+                batch.events
+            );
+        }
+
+        assert_eq!(
+            graph.entities().count(),
+            entities_before,
+            "непосещённые сущности обязаны пережить повторное усечение"
+        );
+        assert_eq!(
+            collector.previous.len(),
+            baselines_before,
+            "baseline непосещённых cgroup нельзя забывать"
+        );
+    }
+
+    #[test]
+    fn depth_limit_reports_truncation() {
+        let mut fs = FixtureFs::new();
+        let mut path = PathBuf::from("/sys/fs/cgroup");
+        fs = fs.inode("/sys/fs/cgroup", 1);
+        for depth in 0..=MAX_DEPTH {
+            path.push(format!("level-{depth}.slice"));
+            fs = fs.inode(
+                &path.to_string_lossy(),
+                u64::try_from(depth).unwrap_or(0) + 2,
+            );
+        }
+        let mut collector = CgroupCollector::new(
+            Arc::new(fs),
+            PathBuf::from("/sys/fs/cgroup"),
+            PathBuf::from("/sys"),
+            100,
+        );
+        let mut graph = EntityGraph::new("boot", "host", Timestamp::from_millis(1_000));
+        graph.begin_tick(Timestamp::from_millis(2_000));
+        let result = {
+            let mut ctx = CollectCtx::new(&mut graph, 1.0);
+            collector.collect(&mut ctx)
+        };
+
+        assert!(matches!(
+            result,
+            Err(CollectError::Truncated {
+                source_name: "cgroup",
+                budget: "max_depth",
+                limit: MAX_DEPTH
+            })
+        ));
     }
 
     #[test]
