@@ -2114,3 +2114,38 @@ fn overview_entities_take_remaining_height() {
         lines.len()
     );
 }
+
+/// Overview не показывает дорожку CPU за минуту.
+///
+/// На спокойном хосте каждая строка даёт `0.00c`, поэтому дорожка и
+/// подписанный пик у всех строк выглядели одинаково — серое полотно на
+/// двадцать колонок. Владелец увидел именно это. Освободившееся место
+/// принадлежит имени: `systemd-journald.service` обязано читаться целиком.
+#[test]
+fn overview_has_no_cpu_lane_and_shows_full_names() {
+    let snapshot = healthy();
+    let mut app = App::default();
+    let text = joined(180, 40, &snapshot, &mut app);
+    let header = text
+        .lines()
+        .find(|line| line.contains("NAME") && line.contains("MEM"))
+        .expect("шапка таблицы сущностей")
+        .to_string();
+
+    assert!(
+        !header.contains("CPU 60s"),
+        "дорожка CPU в Overview не нужна: {header}"
+    );
+    assert!(
+        !header.contains("PEAK"),
+        "подписанный пик без дорожки смысла не имеет: {header}"
+    );
+    let name_width = header
+        .find("CPU")
+        .and_then(|cpu| header.find("NAME").map(|name| cpu - name))
+        .expect("колонки NAME и CPU");
+    assert!(
+        name_width >= 30,
+        "имя обязано получить место, освобождённое дорожкой: {name_width}"
+    );
+}

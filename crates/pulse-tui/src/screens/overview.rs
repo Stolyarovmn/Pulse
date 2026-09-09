@@ -187,7 +187,6 @@ pub(crate) fn render(
                 focused: app.pane == crate::layout::Pane::Primary,
                 rule_width: None,
             },
-            &TrendSource { snapshot, history },
             plan,
             theme,
         );
@@ -224,7 +223,6 @@ pub(crate) fn render(
                 focused: true,
                 rule_width: Some(bottom.width),
             },
-            &TrendSource { snapshot, history },
             plan,
             theme,
         );
@@ -395,7 +393,6 @@ fn render_entities(
     area: Rect,
     rows: &[LogicalRow],
     view: &TableView,
-    source: &TrendSource<'_>,
     plan: &LayoutPlan,
     theme: &Theme,
 ) {
@@ -436,15 +433,20 @@ fn render_entities(
 
     let table = rect(&chunks, 2);
     let show_why = table.width >= 58;
-    // Колонка тренда стоит 20 колонок: форма плюс подписанный пик. Она
-    // появляется только когда есть место и после `WHY`, потому что «почему
-    // эта сущность здесь» важнее формы её нагрузки.
-    let show_trend = table.width >= 78;
+    // Дорожки CPU за минуту здесь нет намеренно. На спокойном хосте каждая
+    // строка даёт 0.00c, поэтому двенадцать ячеек дорожки и подписанный пик
+    // превращались в серое полотно, одинаковое у всех строк: место занято,
+    // информации ноль. Освободившиеся двадцать колонок отданы имени - на
+    // скриншоте владельца `systemd-journald.serv…` и `unattended-upgrades.s…`
+    // обрезались именно из-за дорожки. Форма нагрузки осталась там, где она
+    // отвечает на заданный вопрос: в панели выбранной сущности и на экране
+    // Entities.
+    const NAME: usize = 34;
     let mut lines: Vec<Line<'_>> = Vec::new();
-    let header = match (show_why, show_trend) {
-        (true, true) => "  NAME                    CPU      MEM      S  CPU 60s        PEAK   WHY",
-        (true, false) => "  NAME                    CPU      MEM      S  WHY",
-        (false, _) => "  NAME                    CPU      MEM      S",
+    let header = if show_why {
+        "  NAME                                CPU      MEM      S  WHY"
+    } else {
+        "  NAME                                CPU      MEM      S"
     };
     lines.push(Line::from(Span::styled(header, theme.dim())));
     let visible = usize::from(table.height).saturating_sub(1);
@@ -452,35 +454,25 @@ fn render_entities(
     for (index, logical) in rows.iter().enumerate().skip(start).take(visible) {
         let selected_row = index == view.selected;
         let marker = crate::ui::row_marker(selected_row);
-        let name = crate::ui::truncate(&logical.row.name, 22, theme.capability);
+        let name = crate::ui::truncate(&logical.row.name, NAME, theme.capability);
         let why = logical
             .reasons
             .first()
             .map_or("key", |reason| reason.label());
-        let trend = if show_trend {
-            trend_cell(source, logical, theme)
+        let text = if show_why {
+            format!(
+                "{marker}{name:<NAME$} {:>6} {:>8}  {}  {why}",
+                crate::format::cores(logical.row.cpu),
+                crate::format::bytes(logical.row.memory),
+                logical.row.state.symbol(theme.capability),
+            )
         } else {
-            String::new()
-        };
-        let text = match (show_why, show_trend) {
-            (true, true) => format!(
-                "{marker}{name:<22} {:>6} {:>8}  {}  {trend}  {why}",
+            format!(
+                "{marker}{name:<NAME$} {:>6} {:>8}  {}",
                 crate::format::cores(logical.row.cpu),
                 crate::format::bytes(logical.row.memory),
                 logical.row.state.symbol(theme.capability),
-            ),
-            (true, false) => format!(
-                "{marker}{name:<22} {:>6} {:>8}  {}  {why}",
-                crate::format::cores(logical.row.cpu),
-                crate::format::bytes(logical.row.memory),
-                logical.row.state.symbol(theme.capability),
-            ),
-            (false, _) => format!(
-                "{marker}{name:<22} {:>6} {:>8}  {}",
-                crate::format::cores(logical.row.cpu),
-                crate::format::bytes(logical.row.memory),
-                logical.row.state.symbol(theme.capability),
-            ),
+            )
         };
         lines.push(Line::from(Span::styled(
             text,
@@ -492,31 +484,6 @@ fn render_entities(
         )));
     }
     frame.render_widget(Paragraph::new(lines), table);
-}
-
-/// Ячейка тренда: форма за минуту и подписанный пик.
-///
-/// Пик печатается всегда, когда форма нарисована: без него амплитуда ничего
-/// не значит — всплеск до 0.02 ядра выглядел бы как всплеск до четырёх.
-/// Пока точек меньше двух, вместо формы стоит честная отметка ожидания.
-fn trend_cell(source: &TrendSource<'_>, logical: &LogicalRow, theme: &Theme) -> String {
-    const LANE: usize = 12;
-    let key = pulse_core::sample::SeriesKey::new(
-        logical.row.id,
-        crate::rows::cpu_metric(logical.row.kind),
-    );
-    let Some(trend) = crate::trend::of_series(source.history, source.snapshot, key, LANE, theme)
-    else {
-        return format!("{:<LANE$}  {:>5}", "", "—");
-    };
-    if !trend.is_measured() {
-        return format!("{:<LANE$}  {:>5}", "collecting", "—");
-    }
-    format!(
-        "{:<LANE$}  {:>5}",
-        trend.lane,
-        crate::format::cores(trend.peak)
-    )
 }
 
 /// Панель выбранной сущности (разделы 145, 146).
