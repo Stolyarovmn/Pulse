@@ -192,6 +192,10 @@ pub fn render_scorecard(snapshot: &Snapshot, elapsed: std::time::Duration) -> St
         snapshot.agent.collector_errors
     ));
     out.push_str(&format!(
+        "collector_truncations: {}\n",
+        snapshot.agent.collector_truncations
+    ));
+    out.push_str(&format!(
         "ticks_skipped: {}\n",
         snapshot.agent.ticks_skipped
     ));

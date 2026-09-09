@@ -182,6 +182,7 @@ fn collect_loop(
     let mut ticks_total = 0_u64;
     let mut ticks_skipped = 0_u64;
     let mut collector_errors = 0_u64;
+    let mut collector_truncations = 0_u64;
     let mut latency = LatencyWindow::default();
 
     while !stop.load(AtomicOrdering::Acquire) {
@@ -200,9 +201,16 @@ fn collect_loop(
             }
             collector_errors = collector_errors.saturating_add(noted);
             if let Err(error) = result {
-                collector_errors = collector_errors.saturating_add(1);
+                // Усечение по бюджету — неполнота, а не отказ подсистемы.
+                // Событие в timeline остаётся в обоих случаях: оператор обязан
+                // видеть, что часть хоста не наблюдалась.
+                if matches!(error, pulse_core::CollectError::Truncated { .. }) {
+                    collector_truncations = collector_truncations.saturating_add(1);
+                } else {
+                    collector_errors = collector_errors.saturating_add(1);
+                }
                 graph.push_collector_error(name, &error.to_string());
-                tracing::debug!(collector = name, error = %error, "ошибка коллектора");
+                tracing::debug!(collector = name, error = %error, "неполный или отказавший сбор");
             }
             if stop.load(AtomicOrdering::Acquire) {
                 return;
@@ -267,6 +275,7 @@ fn collect_loop(
             ticks_total,
             ticks_skipped,
             collector_errors,
+            collector_truncations,
             series_live: store_stats.series,
             samples_stored: store_stats.samples,
             store_bytes: store_stats.bytes,

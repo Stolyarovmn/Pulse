@@ -1,0 +1,152 @@
+{
+  "schema": 1,
+  "enabled": true,
+  "settings": {
+    "theme": "system",
+    "accent": "",
+    "sync": true,
+    "backgroundLimit": 12,
+    "idleMinutes": 5,
+    "overlap": 50
+  },
+  "workspaces": [
+    {
+      "id": "5b8dbe12-4cd7-4041-a508-dedafbff4e9c",
+      "name": "Основная",
+      "items": [
+        {
+          "id": "63071ecf-8143-4831-9028-a9734c24fd5c",
+          "type": "site",
+          "title": "Звонок в Яндекс Телемосте",
+          "url": "https://telemost.yandex.ru/j/97189168261023",
+          "mode": "A"
+        },
+        {
+          "id": "5b3030d0-8d45-475c-8357-89833c3ede00",
+          "type": "site",
+          "title": "Grafana",
+          "url": "https://grafana.efgis.igt.dev/connections/datasources",
+          "mode": "A"
+        },
+        {
+          "id": "59bb0aa1-6e7a-4fe4-91ff-9b02f316ed2c",
+          "type": "site",
+          "title": "translate.yandex.ru",
+          "url": "https://translate.yandex.ru/",
+          "mode": "A"
+        },
+        {
+          "id": "c14306b4-ef29-4c87-84ef-f4bd753aada9",
+          "type": "site",
+          "title": "music.yandex.ru",
+          "url": "https://music.yandex.ru/",
+          "mode": "A"
+        },
+        {
+          "id": "29fa0de1-0dcb-48a7-93e6-0b48c17582df",
+          "type": "site",
+          "title": "Vault",
+          "url": "https://vault.igt.dev/ui/vault/auth?with=token",
+          "mode": "A"
+        },
+        {
+          "id": "b35abc86-6517-4f9b-b8bf-0dea95d9220d",
+          "type": "site",
+          "title": "Пароли - Passwork",
+          "url": "https://passwork.me/ru#!/",
+          "mode": "A"
+        }
+      ],
+      "panes": {
+        "top": {
+          "url": "https://passwork.me/ru#!/",
+          "title": "Пароли - Passwork",
+          "mode": "A"
+        },
+        "bottom": {
+          "url": "https://vault.igt.dev/ui/vault/auth?with=token",
+          "title": "Vault",
+          "mode": "A"
+        }
+      },
+      "activePane": "top",
+      "singlePane": "top",
+      "split": true,
+      "ratio": 0.6529035482951145
+    }
+  ],
+  "recent": [
+    {
+      "url": "https://vault.igt.dev/ui/vault/auth?with=token",
+      "title": "Vault",
+      "at": 1788940250869
+    },
+    {
+      "url": "https://passwork.me/ru#!/",
+      "title": "Пароли - Passwork",
+      "at": 1788940250655
+    },
+    {
+      "url": "https://music.yandex.ru/",
+      "title": "music.yandex.ru",
+      "at": 1788939986676
+    },
+    {
+      "url": "https://translate.yandex.ru/",
+      "title": "translate.yandex.ru",
+      "at": 1788939946274
+    },
+    {
+      "url": "https://ya.ru/",
+      "title": "ya.ru",
+      "at": 1788939919389
+    },
+    {
+      "url": "https://grafana.efgis.igt.dev/connections/datasources",
+      "title": "Grafana",
+      "at": 1788937551617
+    },
+    {
+      "url": "https://telemost.yandex.ru/j/97189168261023",
+      "title": "Звонок в Яндекс Телемосте",
+      "at": 1788876628676
+    }
+  ],
+  "sites": {
+    "https://vault.igt.dev": {
+      "zoom": 1,
+      "neverSleep": true,
+      "pwaApp": false,
+      "notifications": "ask"
+    }
+  },
+  "modules": [],
+  "pwas": [
+    {
+      "url": "https://github.com/manifest.json",
+      "start_url": "https://github.com/",
+      "name": "GitHub"
+    },
+    {
+      "url": "https://gitlab.agropromcifra.ru/-/manifest.json",
+      "start_url": "https://gitlab.agropromcifra.ru/",
+      "name": "GitLab"
+    },
+    {
+      "url": "https://gpt.igt.dev/manifest.json",
+      "start_url": "https://gpt.igt.dev/",
+      "name": "Open WebUI"
+    },
+    {
+      "url": "https://music.yandex.ru/site.webmanifest",
+      "start_url": "https://music.yandex.ru/",
+      "name": "Yandex Music"
+    },
+    {
+      "url": "https://yandex.ru/alice/manifest.webmanifest",
+      "start_url": "https://yandex.ru/",
+      "name": "Чат с Алисой и YaGPT — генерируйте тексты, изображения и новые идеи"
+    }
+  ],
+  "updatedAt": 1788947496199
+}

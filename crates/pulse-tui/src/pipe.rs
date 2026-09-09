@@ -376,10 +376,14 @@ fn process_scope(snapshot: &Snapshot, entity: EntityId) -> Option<EntityId> {
 /// Оператор открывает пайп на сервисе или контейнере, а `exe`, порты и файлы
 /// живут у процесса. Раньше такая ветка отвечала «не процесс», то есть
 /// перекладывала на человека работу спуска, которую цепочка обязана делать
-/// сама. Главный кандидат — самый старый по `start_ticks`; PID используется
-/// лишь как детерминированный tie-break, если процессы стартовали в один тик.
-/// Выбирать минимальный PID нельзя: после оборота счётчика ядро выдаёт новому
-/// воркеру малый номер, хотя мастер с большим PID всё ещё жив.
+/// сама.
+///
+/// Критерий — **корень дерева**: процесс, чей `ppid` не принадлежит этому же
+/// сервису. Ни минимальный PID, ни минимальный `start_ticks` этого не дают:
+/// на живом хосте мастер и воркеры стартуют в один и тот же тик ядра, а PID
+/// переиспользуется после оборота счётчика. Запасной критерий — старейший по
+/// `(start_ticks, pid)`: он нужен, когда `ppid` не прочитан (нет прав) или
+/// когда корней несколько.
 #[must_use]
 pub fn main_process(
     snapshot: &Snapshot,
@@ -389,7 +393,7 @@ pub fn main_process(
         return Some((entity, identity));
     }
     let scope = process_scope(snapshot, entity)?;
-    let mut best: Option<(EntityId, pulse_core::ProcessIdentity)> = None;
+    let mut found: Vec<(EntityId, pulse_core::ProcessIdentity, Option<i32>)> = Vec::new();
     let mut queue: Vec<EntityId> = vec![scope];
     let mut seen = 0_usize;
     while let Some(current) = queue.pop() {
@@ -401,17 +405,45 @@ pub fn main_process(
         }
         for child in snapshot.children(current) {
             if let Some(identity) = process_identity(snapshot, child.id) {
-                if best.is_none_or(|(_, known)| {
-                    (identity.start_ticks, identity.pid) < (known.start_ticks, known.pid)
-                }) {
-                    best = Some((child.id, identity));
-                }
+                found.push((child.id, identity, parent_pid(snapshot, child.id)));
             } else {
                 queue.push(child.id);
             }
         }
     }
-    best
+
+    let members: std::collections::HashSet<i32> =
+        found.iter().map(|(_, identity, _)| identity.pid).collect();
+    // Корень дерева: родитель вне сервиса. Кандидатов может быть несколько
+    // (например, два независимых процесса в одной cgroup), поэтому среди них
+    // всё равно нужен детерминированный порядок.
+    let mut roots: Vec<&(EntityId, pulse_core::ProcessIdentity, Option<i32>)> = found
+        .iter()
+        .filter(|(_, _, ppid)| ppid.is_some_and(|ppid| !members.contains(&ppid)))
+        .collect();
+    if roots.is_empty() {
+        // `ppid` не прочитан: остаётся возраст. Это уже эвристика, и пайп
+        // подписывает результат как кандидата, а не как факт.
+        roots = found.iter().collect();
+    }
+    roots
+        .into_iter()
+        .min_by_key(|(_, identity, _)| (identity.start_ticks, identity.pid))
+        .map(|(id, identity, _)| (*id, *identity))
+}
+
+/// Родительский PID процесса из метки коллектора.
+///
+/// Метка, а не связь графа: связи в графе описывают владение ресурсами
+/// (cgroup, unit), а дерево процессов — отдельное отношение, и подменять одно
+/// другим значило бы соврать о топологии.
+fn parent_pid(snapshot: &Snapshot, entity: EntityId) -> Option<i32> {
+    snapshot
+        .entity(entity)?
+        .labels
+        .get("ppid")?
+        .parse::<i32>()
+        .ok()
 }
 
 /// Идентичность процесса: пара `(pid, start_ticks)`, а не номер.
@@ -1268,6 +1300,60 @@ mod tests {
             main_process(&snapshot, unit).map(|(_, identity)| identity.pid),
             Some(4_194_300),
             "главным обязан быть старейший процесс, а не минимальный PID"
+        );
+    }
+
+    /// Живой хост: мастер и воркеры стартуют в один тик ядра.
+    ///
+    /// Замер на `angie.service` показал `start_ticks` 13733357 у мастера и
+    /// 13733357..13733358 у воркеров, а PID шли по возрастанию. Значит выбор
+    /// «старейший, при равенстве минимальный PID» угадывал мастера случайно:
+    /// достаточно воркеру получить меньший PID после оборота счётчика, и ответ
+    /// сломается. Устойчивый критерий — родитель вне сервиса.
+    #[test]
+    fn main_process_is_the_root_of_the_process_tree() {
+        use pulse_core::{AgentStats, EntityGraph, EntityKey, EntitySpec, LatestValues, Timestamp};
+
+        let mut graph = EntityGraph::new("boot", "host", Timestamp::from_millis(1_000));
+        graph.begin_tick(Timestamp::from_millis(2_000));
+        let host = graph.host();
+        let cgroup = graph.upsert(
+            EntitySpec::new(EntityKey::Cgroup { cgroup_id: 9 }, "angie.service").parent(host),
+        );
+        let unit = graph.upsert(
+            EntitySpec::new(
+                EntityKey::Unit {
+                    name: "angie.service".into(),
+                },
+                "angie.service",
+            )
+            .parent(cgroup),
+        );
+        // Мастер: pid 900, родитель — init вне сервиса. Воркеры получили
+        // меньшие номера после оборота счётчика и тот же тик старта.
+        let tree = [(900_i32, 1_i32, 100_u64), (120, 900, 100), (121, 900, 101)];
+        for (pid, ppid, start_ticks) in tree {
+            let _ = graph.upsert(
+                EntitySpec::new(EntityKey::Process { pid, start_ticks }, "angie")
+                    .parent(cgroup)
+                    .label("ppid", ppid.to_string()),
+            );
+        }
+        let _ = graph.end_tick();
+        let snapshot = Snapshot::build(
+            &graph,
+            LatestValues::new(),
+            Vec::new(),
+            Vec::new(),
+            AgentStats::default(),
+            "host",
+            "boot",
+        );
+
+        assert_eq!(
+            main_process(&snapshot, unit).map(|(_, identity)| identity.pid),
+            Some(900),
+            "главным обязан быть корень дерева, а не самый молодой номер"
         );
     }
 

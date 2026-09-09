@@ -366,6 +366,10 @@ fn push_agent_points(
         a.export_series as f64,
     ));
     points.push((
+        SeriesKey::new(host, ids::AGENT_COLLECTOR_TRUNCATIONS),
+        a.collector_truncations as f64,
+    ));
+    points.push((
         SeriesKey::new(host, ids::AGENT_EXPORT_DROPPED),
         a.export_dropped as f64,
     ));
@@ -577,6 +581,7 @@ mod tests {
             ticks_total: 100,
             ticks_skipped: 1,
             collector_errors: 2,
+            collector_truncations: 3,
             series_live: 30,
             samples_stored: 400,
             store_bytes: 5000,
@@ -617,6 +622,11 @@ mod tests {
         assert!(body.contains("pulse_agent_export_requests_total 9"));
         assert!(body.contains("pulse_agent_export_requests_rejected_total 1"));
         assert!(body.contains("pulse_agent_problems_open 1"));
+        // Усечение по бюджету — отдельный ряд: смешать его с ошибками
+        // коллекторов означало бы, что алерт на отказ сбора срабатывает от
+        // законно неполного обхода большой ноды.
+        assert!(body.contains("pulse_agent_collector_errors_total 2"));
+        assert!(body.contains("pulse_agent_collector_truncations_total 3"));
     }
 
     #[test]

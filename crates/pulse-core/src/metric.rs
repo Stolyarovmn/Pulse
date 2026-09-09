@@ -333,6 +333,7 @@ metrics! {
     AGENT_EXPORT_REQUESTS      = 204, "agent_export_requests", Counter, Count, Agent, Always, "Обработанные HTTP-запросы экспорта";
     AGENT_EXPORT_REJECTED      = 205, "agent_export_requests_rejected", Counter, Count, Agent, Always, "Отклонённые HTTP-запросы экспорта";
     AGENT_REDACTIONS           = 206, "agent_redactions", Counter, Count, Agent, Always, "Число скрытых потенциальных секретов";
+    AGENT_COLLECTOR_TRUNCATIONS = 207, "agent_collector_truncations", Counter, Count, Agent, Always, "Такты, где сбор был неполон из-за настроенного бюджета";
 }
 
 /// Метрики, которым нужен длинный ретеншн — тёплый слой истории.

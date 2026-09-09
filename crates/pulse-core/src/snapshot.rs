@@ -161,6 +161,13 @@ pub struct AgentStats {
     pub ticks_total: u64,
     pub ticks_skipped: u64,
     pub collector_errors: u64,
+    /// Сколько раз сбор дал корректный, но неполный результат из-за бюджета.
+    ///
+    /// Отдельно от `collector_errors`: усечение по настроенному лимиту — это
+    /// неполнота наблюдения, а не отказ подсистемы. Смешивать их нельзя,
+    /// иначе на большой ноде агент с дефолтным `max_cgroups` выглядел бы
+    /// сломанным, а настоящий отказ сбора терялся бы среди усечений.
+    pub collector_truncations: u64,
     pub series_live: usize,
     pub samples_stored: u64,
     pub store_bytes: u64,
