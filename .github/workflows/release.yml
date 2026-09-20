@@ -1,0 +1,102 @@
+name: release
+
+# Причина существования: продукт обещает «один переносимый бинарник», но без
+# опубликованного артефакта это обещание проверяемо только тем, кто поставил
+# Rust и собрал репозиторий. Релиз превращает обещание в файл, который можно
+# скачать на чужой сервер, где ничего ставить нельзя.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      TARGET: x86_64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+      # Тот же компилятор, что и в обязательном CI: релиз не имеет права
+      # собираться графом зависимостей, который проверка не видела.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.85.1'
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build static binary
+        run: cargo build --release --locked --target "$TARGET" -p pulse-cli
+
+      # Ровно те же проверки, что делает scripts/build-portable.sh локально.
+      # Без них «статический» остаётся словом в README.
+      - name: Verify portability
+        run: |
+          bin="target/${TARGET}/release/pulse"
+          if ! ldd "$bin" 2>&1 | grep -q "statically linked"; then
+            echo "бинарник не статический:" >&2
+            ldd "$bin" >&2
+            exit 1
+          fi
+          refs="$(grep -ac "GLIBC_" "$bin" || true)"
+          if [ "$refs" != "0" ]; then
+            echo "в бинарнике осталось ссылок на glibc: $refs" >&2
+            exit 1
+          fi
+          echo "ok: статический, без glibc"
+
+      # Артефакт, который не запускается, публиковать нельзя.
+      - name: Smoke
+        run: ./target/${TARGET}/release/pulse check
+
+      - name: Package
+        id: package
+        run: |
+          # Имя артефакта стабильно и не содержит версии: install.sh обязан
+          # уметь взять последний релиз по фиксированному URL
+          # /releases/latest/download/<name>, иначе установка одной строкой
+          # потребует знать номер версии заранее.
+          name="pulse-linux-x86_64"
+          mkdir -p dist
+          install -m 0755 "target/${TARGET}/release/pulse" "dist/${name}"
+          ( cd dist && sha256sum "${name}" > SHA256SUMS )
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: dist/
+
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/${{ steps.package.outputs.name }}
+            dist/SHA256SUMS
+          fail_on_unmatched_files: true
+          body: |
+            Статический бинарник Linux x86_64 (musl), зависимостей нет.
+
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | bash
+            ```
+
+            Либо вручную:
+
+            ```bash
+            curl -fLO https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ steps.package.outputs.name }}
+            curl -fLO https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/SHA256SUMS
+            sha256sum -c SHA256SUMS
+            chmod +x ${{ steps.package.outputs.name }} && ./${{ steps.package.outputs.name }} run
+            ```
+
+            Проверено в сборке: статическая линковка, отсутствие ссылок на
+            glibc, успешный `pulse check`. Поддерживается только Linux x86_64
+            с cgroup v2: другие таргеты не публикуются, пока их нечем
+            проверить на прогоне.
