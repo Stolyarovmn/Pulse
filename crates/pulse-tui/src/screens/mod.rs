@@ -46,7 +46,7 @@ pub fn render(
     snapshot: &Snapshot,
     app: &mut App,
     theme: &Theme,
-    history: Option<&pulse_store::History>,
+    history: Option<&crate::series::SeriesReader<'_>>,
 ) {
     let area = frame.area();
     let story_len = u16::try_from(story_events(snapshot).len()).unwrap_or(u16::MAX);

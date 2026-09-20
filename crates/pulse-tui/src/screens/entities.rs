@@ -35,7 +35,7 @@ pub(crate) fn render(
     app: &mut App,
     plan: &LayoutPlan,
     theme: &Theme,
-    history: Option<&pulse_store::History>,
+    history: Option<&crate::series::SeriesReader<'_>>,
 ) {
     // Производный вид считается один раз на такт: и ввод, и отрисовка читают
     // один результат.

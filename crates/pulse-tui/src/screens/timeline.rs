@@ -28,7 +28,7 @@ pub(crate) fn render(
     app: &mut App,
     plan: &LayoutPlan,
     theme: &Theme,
-    history: Option<&pulse_store::History>,
+    history: Option<&crate::series::SeriesReader<'_>>,
 ) {
     // Raw поток — secondary subview из палитры; default остаётся Story (§183).
     let story: Vec<StoryRow> = if app.timeline.raw_events {
@@ -382,7 +382,7 @@ fn render_metric_lanes(
     snapshot: &Snapshot,
     app: &App,
     theme: &Theme,
-    history: Option<&pulse_store::History>,
+    history: Option<&crate::series::SeriesReader<'_>>,
 ) {
     let dot = if matches!(theme.capability, Capability::Ascii) {
         "."
@@ -405,7 +405,7 @@ fn render_metric_lanes(
         .iter()
         .map(|(label, metric)| {
             let points = history.map_or_else(Vec::new, |history| {
-                history.series_points(
+                history.points(
                     pulse_core::sample::SeriesKey::new(snapshot.host, *metric),
                     from,
                     to,

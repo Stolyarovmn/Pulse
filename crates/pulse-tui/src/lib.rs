@@ -31,6 +31,7 @@ pub mod layout;
 pub mod pipe;
 pub mod rows;
 pub mod screens;
+pub mod series;
 pub mod state;
 pub mod table;
 pub mod theme;
@@ -169,15 +170,13 @@ pub fn run(
         if !app.paused {
             current = snapshot();
         }
-        let history_guard = match history.read() {
-            Ok(guard) => guard,
-            // Паника писателя не делает данные несогласованными.
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        // Замок истории больше не удерживается на время кадра: читатель
+        // берёт его отдельно на каждую выборку серии, поэтому медленная
+        // отрисовка не задерживает поток сбора (PULSE-079).
+        let reader = series::SeriesReader::new(history.as_ref());
         terminal.draw(|frame| {
-            screens::render(frame, &current, &mut app, &theme, Some(&history_guard));
+            screens::render(frame, &current, &mut app, &theme, Some(&reader));
         })?;
-        drop(history_guard);
         let last_draw = Instant::now();
 
         // Ждём ввод не дольше интервала перерисовки: интерфейс остаётся живым,

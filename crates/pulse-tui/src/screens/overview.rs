@@ -49,7 +49,7 @@ pub(crate) fn render(
     app: &mut App,
     plan: &LayoutPlan,
     theme: &Theme,
-    history: Option<&pulse_store::History>,
+    history: Option<&crate::series::SeriesReader<'_>>,
 ) {
     let composition = OverviewComposition::resolve_dimensions(area.width, area.height);
 
@@ -384,7 +384,7 @@ struct TableView {
 /// набирается восемь аргументов, и подпись перестаёт читаться.
 pub(crate) struct TrendSource<'a> {
     pub snapshot: &'a Snapshot,
-    pub history: Option<&'a pulse_store::History>,
+    pub history: Option<&'a crate::series::SeriesReader<'a>>,
 }
 
 /// Explainable Relevant/Key Entities (v0.9 §165, §176, §190).

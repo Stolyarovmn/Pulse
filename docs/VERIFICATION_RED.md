@@ -52,6 +52,7 @@
 | PULSE-080 | `proc_walk_work_is_bounded_by_max_processes` + `cgroup_child_listing_is_bounded_by_budget` | pulse-collect | обход материализовал весь каталог и применял бюджет уже после: 20 000 записей `/proc` при лимите 64 | FIXED в PR-07c |
 | PULSE-071 | `descriptor_scan_work_is_bounded_by_budget` + `descriptor_scan_within_budget_is_not_truncated` | pulse-collect | `read_link` выполнялся для каждого дескриптора: 20 000 разыменований при бюджете 64, усечение не заявлялось | FIXED в PR-14 |
 | PULSE-078 | `tick_duration_covers_storage_phase` | pulse-cli | длительность такта фиксировалась до записи в историю: на живом стенде 28.5 мс вместо 51.4 мс, `ticks_skipped` не видел перерасхода | FIXED в PR-15 |
+| PULSE-079 | `drawing_after_a_read_does_not_block_the_writer` + контрольный `holding_the_guard_across_a_draw_does_block_the_writer` | pulse-tui | кадр удерживал read-замок истории всю отрисовку: писатель ждал её окончания (в опыте — 400 мс) | FIXED в PR-16 |
 | PULSE-001 | пять обязательных команд на `1.85.1` | workspace | `rustc 1.85.1 is not supported by: darling@0.24.1 requires rustc 1.88.0; instability@0.3.13 requires rustc 1.88` | FIXED в PR-01 |
 
 ### PULSE-039: почему тест зелёный
@@ -71,7 +72,6 @@ warm-слоя показала обратное: `History::rate` считает 
 | Finding | Причина | Куда уходит |
 |---|---|---|
 | PULSE-009 (TOCTOU между проверкой и `kill`) | нужен pidfd-путь в production API | BLOCKED_BY_DESIGN, PR-06 |
-| PULSE-079 (медленный TUI держит замок истории) | нужен runtime-шов, отделяющий выборку истории от отрисовки | BLOCKED_BY_DESIGN, PR-09 |
 | PULSE-015 (page size 4096) | обычный x86_64 CI имеет ровно 4096 и дефект не проявляется | LIVE_REQUIRED, PR-10 |
 | PULSE-067 (ширина в колонках терминала) | нужен переход на unicode-width в собственных помощниках | BLOCKED_BY_DESIGN, PR-12 |
 | PULSE-069 (advisory `lru 0.12.5`) | версия приходит транзитивно через `ratatui 0.29`; гейт добавлен, обновление — отдельная правка | гейт в PR-01, обновление в PR-13 |

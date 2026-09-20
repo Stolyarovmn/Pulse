@@ -54,7 +54,7 @@ impl Trend {
 /// показывать плоскую линию.
 #[must_use]
 pub fn of_series(
-    history: Option<&pulse_store::History>,
+    history: Option<&crate::series::SeriesReader<'_>>,
     snapshot: &Snapshot,
     key: SeriesKey,
     width: usize,
@@ -63,7 +63,7 @@ pub fn of_series(
     let history = history?;
     let to = snapshot.at;
     let from = to.saturating_sub_millis(WINDOW_MS);
-    let points = history.series_points(key, from, to);
+    let points = history.points(key, from, to);
     if points.len() < 2 {
         return Some(Trend {
             lane: String::new(),
@@ -237,8 +237,10 @@ mod tests {
         }
 
         let theme = Theme::with_capability(Capability::TrueColor);
+        let locked = std::sync::RwLock::new(history);
+        let reader = crate::series::SeriesReader::new(&locked);
         let trend =
-            of_series(Some(&history), &snapshot, key, 12, &theme).expect("история подключена");
+            of_series(Some(&reader), &snapshot, key, 12, &theme).expect("история подключена");
         assert!(trend.is_measured());
         assert_eq!(trend.peak, 0.03);
         assert!((trend.mean - 0.03).abs() < f64::EPSILON);

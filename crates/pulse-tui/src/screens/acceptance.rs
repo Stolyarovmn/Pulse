@@ -1564,8 +1564,10 @@ fn metric_lanes_use_real_history_when_available() {
     let theme = Theme::with_capability(Capability::TrueColor);
     let mut snapshot_at = snapshot.clone();
     snapshot_at.at = Timestamp::from_millis(7_000);
+    let locked = std::sync::RwLock::new(history);
+    let reader = crate::series::SeriesReader::new(&locked);
     terminal
-        .draw(|frame| super::render(frame, &snapshot_at, &mut app, &theme, Some(&history)))
+        .draw(|frame| super::render(frame, &snapshot_at, &mut app, &theme, Some(&reader)))
         .expect("render");
     let buffer = terminal.backend().buffer().clone();
     let text: String = (0..40)
