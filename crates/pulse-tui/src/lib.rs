@@ -159,7 +159,8 @@ pub fn run(
     let mut app = App::new(config.security.allow_actions)
         .with_details(details)
         .with_icons(config.ui.icons)
-        .with_demo(demo);
+        .with_demo(demo)
+        .with_self_metrics(config.ui.show_self_metrics);
     let refresh = Duration::from_millis(config.ui.refresh_ms.clamp(50, 5_000));
     let mut current = snapshot();
 

@@ -159,6 +159,37 @@ fn healthy() -> Snapshot {
     )
 }
 
+/// PULSE-085: опция конфигурации не имеет права быть тихим no-op.
+///
+/// `ui.show_self_metrics` была объявлена и нигде не читалась: оператор
+/// включал её и не получал ничего, без единого сообщения.
+#[test]
+fn self_metrics_option_changes_the_frame() {
+    let mut snapshot = healthy();
+    snapshot.agent = AgentStats {
+        tick_duration_ms: 51.4,
+        tick_duration_p95_ms: 57.2,
+        ticks_skipped: 2,
+        rss_bytes: 3 * 1024 * 1024,
+        ..AgentStats::default()
+    };
+
+    let mut off = App::default();
+    let without: String = draw(180, 40, &snapshot, &mut off).join("\n");
+    assert!(
+        !without.contains("self 51ms"),
+        "по умолчанию стоимость агента не занимает место на экране"
+    );
+
+    let mut on = App::default().with_self_metrics(true);
+    let with: String = draw(180, 40, &snapshot, &mut on).join("\n");
+    assert!(
+        with.contains("self 51ms") && with.contains("p95 57ms") && with.contains("skip 2"),
+        "включённая опция обязана показывать стоимость агента: {}",
+        with.lines().last().unwrap_or_default()
+    );
+}
+
 /// Снимок, приближённый к реальному хосту efgis-dockerdev.
 ///
 /// Здесь воспроизведены именно те условия, при которых экраны деградировали:

@@ -54,6 +54,7 @@
 | PULSE-078 | `tick_duration_covers_storage_phase` | pulse-cli | длительность такта фиксировалась до записи в историю: на живом стенде 28.5 мс вместо 51.4 мс, `ticks_skipped` не видел перерасхода | FIXED в PR-15 |
 | PULSE-079 | `drawing_after_a_read_does_not_block_the_writer` + контрольный `holding_the_guard_across_a_draw_does_block_the_writer` | pulse-tui | кадр удерживал read-замок истории всю отрисовку: писатель ждал её окончания (в опыте — 400 мс) | FIXED в PR-16 |
 | PULSE-015 | `agent_rss_follows_kernel_page_size` + `process_rss_without_status_follows_kernel_page_size` | pulse-collect | размер страницы был константой 4096: на ядре с 64 КиБ страницами RSS занижался в шестнадцать раз | FIXED в PR-17 |
+| PULSE-085 | `self_metrics_option_changes_the_frame` | pulse-tui | `ui.show_self_metrics` нигде не читалась: включение опции не меняло ни одного кадра | FIXED в PR-18 |
 | PULSE-001 | пять обязательных команд на `1.85.1` | workspace | `rustc 1.85.1 is not supported by: darling@0.24.1 requires rustc 1.88.0; instability@0.3.13 requires rustc 1.88` | FIXED в PR-01 |
 
 ### PULSE-039: почему тест зелёный

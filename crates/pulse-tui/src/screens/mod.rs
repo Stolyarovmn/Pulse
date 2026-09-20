@@ -87,7 +87,7 @@ pub fn render(
 
     render_header(frame, rect(&chunks, 0), snapshot, app, &plan, theme);
     render_header_rule(frame, rect(&chunks, 1), theme);
-    render_footer(frame, rect(&chunks, 3), &plan, theme, app.icons);
+    render_footer(frame, rect(&chunks, 3), snapshot, app, &plan, theme);
 
     if matches!(app.overlay, Some(Overlay::Help)) {
         help::render(frame, body, &plan, theme);
@@ -349,18 +349,43 @@ fn render_header(
 }
 
 /// Футер по пресетам раздела 105.
+///
+/// При `ui.show_self_metrics` справа добавляется стоимость самого агента.
+/// Блок рисуется только когда он помещается целиком: подсказки клавиш важнее
+/// самонаблюдения, и обрезанное «self 51ms p9…» не сообщает ничего.
 fn render_footer(
     frame: &mut Frame<'_>,
     area: Rect,
+    snapshot: &Snapshot,
+    app: &App,
     plan: &LayoutPlan,
     theme: &Theme,
-    icons: pulse_core::config::IconSet,
 ) {
-    let line = ui::footer_line(plan.footer, area.width, theme.capability, icons);
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(line, theme.dim()))),
-        area,
-    );
+    let hints = ui::footer_line(plan.footer, area.width, theme.capability, app.icons);
+    let mut spans = vec![Span::styled(hints.clone(), theme.dim())];
+    if app.show_self_metrics {
+        let self_cost = self_metrics_text(snapshot);
+        let used = u16::try_from(hints.chars().count() + self_cost.chars().count() + 2)
+            .unwrap_or(u16::MAX);
+        if used <= area.width {
+            let gap = usize::from(area.width) - hints.chars().count() - self_cost.chars().count();
+            spans.push(Span::styled(" ".repeat(gap), theme.dim()));
+            spans.push(Span::styled(self_cost, theme.dim()));
+        }
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Стоимость агента одной строкой.
+fn self_metrics_text(snapshot: &Snapshot) -> String {
+    let agent = &snapshot.agent;
+    format!(
+        "self {:.0}ms p95 {:.0}ms rss {:.1}MB skip {}",
+        agent.tick_duration_ms,
+        agent.tick_duration_p95_ms,
+        agent.rss_bytes as f64 / (1024.0 * 1024.0),
+        agent.ticks_skipped
+    )
 }
 
 /// Full-width правило под шапкой (§190 и эскизы 5732, 5775, 5818, 5898, 5947).

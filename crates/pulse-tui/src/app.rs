@@ -306,6 +306,13 @@ pub struct App {
     /// проблемы настоящих правил, и без пометки оператор примет сценарий
     /// за состояние своей машины.
     pub demo: bool,
+    /// Показывать стоимость самого агента в футере (`ui.show_self_metrics`).
+    ///
+    /// По умолчанию выключено: оператор смотрит на свой хост, а не на
+    /// инструмент. Но вопрос «сколько стоит сам агент» законный, и
+    /// отвечать на него только отдельной командой `scorecard` неудобно,
+    /// когда агент уже работает на экране.
+    pub show_self_metrics: bool,
     /// Число колонок сетки пайпа в последнем кадре.
     ///
     /// Пишет экран, читает маршрутизация ввода: только кадр знает свою
@@ -338,6 +345,7 @@ impl Default for App {
             status: String::new(),
             allow_actions: false,
             icons: pulse_core::config::IconSet::Off,
+            show_self_metrics: false,
             pipe_cols: Cell::new(1),
             demo: false,
             layout: crate::layout::LayoutEngine::new(),
@@ -468,6 +476,13 @@ impl App {
     #[must_use]
     pub const fn with_demo(mut self, demo: bool) -> Self {
         self.demo = demo;
+        self
+    }
+
+    /// Включает строку стоимости агента в футере.
+    #[must_use]
+    pub const fn with_self_metrics(mut self, show: bool) -> Self {
+        self.show_self_metrics = show;
         self
     }
 
