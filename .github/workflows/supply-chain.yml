@@ -37,10 +37,34 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked --version ^0.21
-      # Без `--ignore`: подавление advisory возвращает нас в исходное
-      # состояние, где уязвимая версия невидима. Известные исключения
-      # фиксируются в docs/SECURITY.md с обоснованием, а не флагом.
+      # Исключения поимённые и обоснованные в docs/SECURITY.md §13.1:
+      # оба advisory на `lru 0.12.5` — unsound-пути, которых нет ни в
+      # ratatui 0.29 (только get/put/resize кэша раскладки), ни у нас.
+      # Обновление lru невозможно: ratatui 0.29 требует ^0.12, исправления
+      # вышли в 0.16.3 и 0.18.2. Любое другое advisory по-прежнему валит гейт.
       - name: Advisories
-        run: cargo audit --deny warnings
+        run: |
+          cargo audit --deny warnings \
+            --ignore RUSTSEC-2026-0002 \
+            --ignore RUSTSEC-2026-0253
+      # Исключение верно только для конкретного пути в графе. Если lru пришла
+      # не через ratatui или сменила версию, обоснование в SECURITY.md больше
+      # не описывает реальность, и гейт обязан потребовать его пересмотра.
+      - name: Exception scope
+        run: |
+          if ! grep -q 'name = "lru"' Cargo.lock; then
+            echo "lru исчезла из графа: снимите исключения в supply-chain.yml и docs/SECURITY.md §13.1" >&2
+            exit 1
+          fi
+          version="$(awk '/^name = "lru"$/{found=1} found && /^version = /{gsub(/"/,"",$3); print $3; exit}' Cargo.lock)"
+          if [ "$version" != "0.12.5" ]; then
+            echo "lru обновилась до ${version}: обоснование исключения относилось к 0.12.5" >&2
+            exit 1
+          fi
+          if ! cargo tree --locked --invert lru --package lru | grep -q 'ratatui'; then
+            echo "lru пришла в граф не через ratatui: путь эксплуатации изменился" >&2
+            exit 1
+          fi
+          echo "ok: исключение описывает фактический граф"
       - name: Duplicate dependencies
         run: cargo tree --duplicates --locked
