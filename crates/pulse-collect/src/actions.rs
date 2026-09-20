@@ -96,6 +96,14 @@ impl fmt::Display for ActionError {
 impl std::error::Error for ActionError {}
 
 /// Посылает сигнал процессу, предварительно убедившись в его идентичности.
+///
+/// Порядок шагов важен и является сутью защиты от TOCTOU (PULSE-009).
+/// Сначала открывается `pidfd` — дескриптор, привязанный к **конкретному**
+/// процессу, а не к номеру. Номер после этого может быть переиспользован
+/// сколько угодно раз: дескриптор всё равно указывает на исходный процесс, и
+/// сигнал по нему либо дойдёт адресату, либо не дойдёт никому. Проверка
+/// времени старта выполняется уже после открытия дескриптора: она отсекает
+/// случай, когда номер сменил владельца ещё до нашего вызова.
 pub fn signal_process(
     fs: &dyn FsSource,
     proc_root: &Path,
@@ -107,6 +115,9 @@ pub fn signal_process(
         // PID 1 — init/systemd: сигнал ему может остановить всю машину.
         return Err(ActionError::InvalidPid { pid });
     }
+
+    let raw = rustix::process::Pid::from_raw(pid).ok_or(ActionError::InvalidPid { pid })?;
+    let handle = rustix::process::pidfd_open(raw, rustix::process::PidfdFlags::empty());
 
     let stat_path = proc_root.join(pid.to_string()).join("stat");
     let Some(text) = fs.read_opt(&stat_path) else {
@@ -123,11 +134,30 @@ pub fn signal_process(
         });
     }
 
-    let raw = rustix::process::Pid::from_raw(pid).ok_or(ActionError::InvalidPid { pid })?;
-    rustix::process::kill_process(raw, signal.to_rustix()).map_err(|err| ActionError::Denied {
-        pid,
-        reason: err.to_string(),
-    })
+    match handle {
+        Ok(pidfd) => rustix::process::pidfd_send_signal(&pidfd, signal.to_rustix()).map_err(
+            |err| match err {
+                rustix::io::Errno::SRCH => ActionError::Gone { pid },
+                other => ActionError::Denied {
+                    pid,
+                    reason: other.to_string(),
+                },
+            },
+        ),
+        // Ядро старше 5.3 не знает `pidfd_open`. Остаётся посылать сигнал по
+        // номеру: окно переиспользования сужено проверкой выше, но не закрыто.
+        // Остаточный риск описан в docs/SECURITY.md §5.
+        Err(rustix::io::Errno::NOSYS) => rustix::process::kill_process(raw, signal.to_rustix())
+            .map_err(|err| ActionError::Denied {
+                pid,
+                reason: err.to_string(),
+            }),
+        Err(rustix::io::Errno::SRCH) => Err(ActionError::Gone { pid }),
+        Err(err) => Err(ActionError::Denied {
+            pid,
+            reason: err.to_string(),
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -196,6 +226,45 @@ mod tests {
         assert!(
             matches!(err, Err(ActionError::Reused { .. })),
             "реальный процесс должен быть защищён проверкой времени старта: {err:?}"
+        );
+    }
+
+    /// PULSE-009: сигнал адресуется процессу, а не номеру.
+    ///
+    /// Тест поднимает настоящего потомка, шлёт ему `SIGTERM` через
+    /// `signal_process` и требует, чтобы он завершился именно сигналом.
+    /// Живой прогон нужен потому, что путь `pidfd_open` + `pidfd_send_signal`
+    /// проверяется только ядром: фикстура файловой системы его не касается.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn live_signal_reaches_the_child_process() {
+        use std::process::Command;
+
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("потомок обязан запуститься");
+        let pid = child.id() as i32;
+
+        let real = crate::fs::RealFs;
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).expect("stat потомка");
+        let start_ticks = parse::parse_proc_stat(&stat)
+            .expect("разбор stat")
+            .start_ticks;
+
+        signal_process(
+            &real,
+            &PathBuf::from("/proc"),
+            pid,
+            start_ticks,
+            Signal::Term,
+        )
+        .expect("сигнал обязан дойти");
+
+        let status = child.wait().expect("ожидание потомка");
+        assert!(
+            !status.success(),
+            "потомок обязан завершиться сигналом, статус: {status:?}"
         );
     }
 }
