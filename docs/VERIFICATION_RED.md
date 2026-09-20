@@ -56,6 +56,7 @@
 | PULSE-015 | `agent_rss_follows_kernel_page_size` + `process_rss_without_status_follows_kernel_page_size` | pulse-collect | размер страницы был константой 4096: на ядре с 64 КиБ страницами RSS занижался в шестнадцать раз | FIXED в PR-17 |
 | PULSE-085 | `self_metrics_option_changes_the_frame` | pulse-tui | `ui.show_self_metrics` нигде не читалась: включение опции не меняло ни одного кадра | FIXED в PR-18 |
 | PULSE-082 | `scripts/measure-memory-bound.sh` + лейн `.github/workflows/memory.yml` | pulse-cli, pulse-store | живой прогон с бюджетом 2 МиБ: пик истории 2.4 МиБ, вытеснение 9 раз без прогресса; факт был виден только в `scorecard` и не экспортировался | FIXED в PR-22: пик и отказ вытеснения ушли в `/metrics`, контракт «либо в бюджете, либо заявлено» закреплён гейтом |
+| PULSE-077 | `every_produced_metric_is_described` (`pulse-collect/tests/registry.rs`) + `process_state_is_never_exported` | pulse-collect, pulse-export | образец с метрикой вне реестра молча пропускался экспортёром: метрика существовала в истории и отсутствовала в `/metrics` | FIXED в PR-23. Обратная проверка «у каждой объявленной метрики есть производитель» отклонена как нестабильная: набор произведённых метрик зависит от подсистем хоста |
 | PULSE-001 | пять обязательных команд на `1.85.1` | workspace | `rustc 1.85.1 is not supported by: darling@0.24.1 requires rustc 1.88.0; instability@0.3.13 requires rustc 1.88` | FIXED в PR-01 |
 
 ### PULSE-039: почему тест зелёный
