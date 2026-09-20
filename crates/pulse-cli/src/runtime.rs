@@ -241,11 +241,12 @@ fn collect_loop(
         batch.events.extend(analyzer.take_events());
 
         ticks_total = ticks_total.saturating_add(1);
-        let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
-        latency.push(elapsed_ms);
-        if started.elapsed() > interval {
-            ticks_skipped = ticks_skipped.saturating_add(1);
-        }
+
+        // Шов замедления фазы хранения существует только в тестовой сборке:
+        // доказать, что метрика длительности покрывает запись в историю,
+        // можно лишь задержкой внутри этой фазы.
+        #[cfg(test)]
+        delay_after_analysis();
 
         let (events, store_stats) = with_history_write(&history, |stored| {
             stored.ingest(&batch);
@@ -270,8 +271,12 @@ fn collect_loop(
         }
 
         let agent = AgentStats {
-            tick_duration_ms: elapsed_ms,
-            tick_duration_p95_ms: latency.p95(),
+            // Длительность такта дописывается ниже: до построения снимка она
+            // ещё неизвестна, а заполнять её неполным значением - ровно тот
+            // дефект, из-за которого self-observability занижала стоимость
+            // агента (PULSE-078).
+            tick_duration_ms: 0.0,
+            tick_duration_p95_ms: 0.0,
             ticks_total,
             ticks_skipped,
             collector_errors,
@@ -295,8 +300,22 @@ fn collect_loop(
                 .unwrap_or_default(),
             ..AgentStats::default()
         };
-        let snapshot =
+        let mut snapshot =
             Snapshot::build(&graph, latest, problems, events, agent, &hostname, &boot_id);
+
+        // Такт закончен: измерена вся работа - сбор, анализ, запись в историю
+        // и построение снимка. Раньше замер останавливался перед записью, и
+        // самая дорогая фаза (вытеснение истории) в стоимость агента не
+        // попадала, а `ticks_skipped` не видел перерасхода интервала.
+        let full = started.elapsed();
+        let full_ms = full.as_secs_f64() * 1_000.0;
+        latency.push(full_ms);
+        if full > interval {
+            ticks_skipped = ticks_skipped.saturating_add(1);
+        }
+        snapshot.agent.tick_duration_ms = full_ms;
+        snapshot.agent.tick_duration_p95_ms = latency.p95();
+        snapshot.agent.ticks_skipped = ticks_skipped;
         published.store(Arc::new(snapshot));
 
         let remaining = interval.saturating_sub(started.elapsed());
@@ -368,6 +387,22 @@ impl LatencyWindow {
     }
 }
 
+/// Задержка фазы хранения, включаемая только тестом.
+///
+/// Полноту измерения такта нельзя доказать чтением кода: нужен участок
+/// конвейера с известной длительностью **после** анализа. В обычной сборке
+/// шов отсутствует полностью.
+#[cfg(test)]
+static POST_ANALYSIS_DELAY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+fn delay_after_analysis() {
+    let ms = POST_ANALYSIS_DELAY_MS.load(AtomicOrdering::Acquire);
+    if ms > 0 {
+        thread::sleep(Duration::from_millis(ms));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,5 +435,43 @@ mod tests {
     #[test]
     fn series_key_is_small_enough_for_hot_path() {
         assert!(std::mem::size_of::<SeriesKey>() <= 16);
+    }
+
+    /// PULSE-078: стоимость такта обязана включать весь конвейер.
+    ///
+    /// Длительность фиксировалась до записи в историю, поэтому запись,
+    /// вытеснение и построение снимка в стоимость агента не попадали:
+    /// `pulse scorecard` показывал агента дешевле, чем он есть, а
+    /// `ticks_skipped` не замечал перерасхода интервала. Тест задерживает
+    /// фазу хранения на известную величину и требует увидеть её в метрике.
+    #[test]
+    fn tick_duration_covers_storage_phase() {
+        const DELAY_MS: u64 = 250;
+        // Минимум, разрешённый валидацией: такт с задержкой обязан выйти за
+        // интервал, иначе перерасход нечем показать.
+        const INTERVAL_MS: u64 = 100;
+        POST_ANALYSIS_DELAY_MS.store(DELAY_MS, AtomicOrdering::Release);
+        let mut config = Config::default();
+        config.general.interval_ms = INTERVAL_MS;
+        let fs = Arc::new(pulse_collect::DemoFs::new(Duration::from_millis(
+            INTERVAL_MS,
+        )));
+        let runtime = AgentRuntime::start_with_fs(&config, fs).expect("агент обязан стартовать");
+        let snapshot = runtime.wait_for_tick(2, Duration::from_secs(10));
+        let outcome = snapshot.map(|snapshot| snapshot.agent);
+        runtime.shutdown();
+        POST_ANALYSIS_DELAY_MS.store(0, AtomicOrdering::Release);
+
+        let agent = outcome.expect("такт обязан быть собран");
+        assert!(
+            agent.tick_duration_ms >= DELAY_MS as f64,
+            "фаза хранения обязана входить в длительность такта: {} мс при задержке {DELAY_MS} мс",
+            agent.tick_duration_ms
+        );
+        assert!(
+            agent.ticks_skipped >= 1,
+            "такт длиннее интервала обязан считаться перерасходом, пропущено: {}",
+            agent.ticks_skipped
+        );
     }
 }
