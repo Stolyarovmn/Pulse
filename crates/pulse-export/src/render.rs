@@ -600,9 +600,9 @@ mod tests {
             history_evicted_buckets: 0,
             history_evicted_hot_ticks: 0,
             history_evicted_events: 0,
-            history_eviction_no_progress: 0,
-            history_eviction_iterations: 0,
-            history_peak_bytes: 0,
+            history_eviction_no_progress: 4,
+            history_eviction_iterations: 9,
+            history_peak_bytes: 6000,
             rss_bytes: 8000,
             cpu_seconds: 1.25,
             redactions: 3,
@@ -638,6 +638,8 @@ mod tests {
         // законно неполного обхода большой ноды.
         assert!(body.contains("pulse_agent_collector_errors_total 2"));
         assert!(body.contains("pulse_agent_collector_truncations_total 3"));
+        assert!(body.contains("pulse_agent_history_peak_bytes 6000"));
+        assert!(body.contains("pulse_agent_history_eviction_no_progress_total 4"));
     }
 
     #[test]

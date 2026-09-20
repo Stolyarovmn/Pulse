@@ -586,6 +586,12 @@ fn ports(
         if details.ports.len() > MAX_VALUES {
             listed.push(format!("(+{})", details.ports.len() - MAX_VALUES));
         }
+        if details.fd_truncated {
+            listed.push(format!(
+                "неполно: просмотрено {} дескрипторов",
+                details.fd_total
+            ));
+        }
         listed
     };
     if let Some(note) = note {
@@ -1193,6 +1199,34 @@ fn single_box(node: &Node, selected: Branch, style: Look) -> Vec<RenderedLine> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// PULSE-071: найденный порт не делает список полным.
+    ///
+    /// Слушающий 443 может оказаться за границей бюджета, даже если 80 уже
+    /// найден. Без пометки оператор прочитает частичный список как полный.
+    #[test]
+    fn truncated_descriptor_scan_marks_nonempty_port_list_incomplete() {
+        let details = ProcessDetails {
+            fd_total: 1_024,
+            ports: vec![pulse_core::Port {
+                protocol: "tcp",
+                address: "0.0.0.0".to_string(),
+                port: 80,
+            }],
+            fd_truncated: true,
+            ..ProcessDetails::default()
+        };
+
+        let rendered = ports(Some(&details), Some(42), None);
+        assert!(
+            rendered.iter().any(|line| line.contains("неполно")),
+            "частичный непустой список обязан заявить усечение: {rendered:?}"
+        );
+        assert!(
+            rendered.iter().any(|line| line.contains(":80")),
+            "найденные порты при этом не теряются: {rendered:?}"
+        );
+    }
 
     /// Дефект с живого хоста: пайп на unit отвечал «процессов под сущностью
     /// нет», потому что процессы сервиса не потомки unit — и unit, и процессы
