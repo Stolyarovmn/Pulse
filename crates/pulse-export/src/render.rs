@@ -369,6 +369,17 @@ fn push_agent_points(
         SeriesKey::new(host, ids::AGENT_COLLECTOR_TRUNCATIONS),
         a.collector_truncations as f64,
     ));
+    // Бюджет истории может оказаться меньше минимально возможного окна: тогда
+    // вытеснение не освобождает место, и превышение обязано быть видно
+    // снаружи, а не только в `pulse scorecard` (PULSE-082).
+    points.push((
+        SeriesKey::new(host, ids::AGENT_HISTORY_PEAK_BYTES),
+        a.history_peak_bytes as f64,
+    ));
+    points.push((
+        SeriesKey::new(host, ids::AGENT_EVICTION_NO_PROGRESS),
+        a.history_eviction_no_progress as f64,
+    ));
     points.push((
         SeriesKey::new(host, ids::AGENT_EXPORT_DROPPED),
         a.export_dropped as f64,

@@ -1,0 +1,49 @@
+name: memory
+
+# Причина существования: бюджет `store.max_bytes` проверялся только unit-тестами
+# вытеснения. Они доказывают арифметику структуры, но не отвечают на вопрос
+# «сколько агент займёт на живом ядре» (PULSE-082). Лейн гоняет настоящий
+# бинарник на настоящем /proc с намеренно малым бюджетом.
+#
+# Отдельно от обязательного CI: замер зависит от загруженности раннера, и
+# блокировать им каждый PR значило бы получать красный цвет от чужого шума.
+
+on:
+  schedule:
+    - cron: '41 3 * * *'
+  workflow_dispatch:
+  push:
+    paths:
+      - 'crates/pulse-store/**'
+      - 'crates/pulse-cli/src/runtime.rs'
+      - 'scripts/measure-memory-bound.sh'
+      - '.github/workflows/memory.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  bound:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.85.1'
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: |
+          cargo build --release --locked --target x86_64-unknown-linux-musl -p pulse-cli
+          mkdir -p dist
+          install -m 0755 target/x86_64-unknown-linux-musl/release/pulse dist/pulse
+
+      # Достижимый бюджет: пик истории обязан остаться под ним.
+      - name: Budget is honoured
+        run: bash scripts/measure-memory-bound.sh 40 67108864
+
+      # Бюджет меньше минимального окна: соблюсти его нельзя, но агент обязан
+      # заявить это счётчиком, а не молча расти.
+      - name: Impossible budget is declared
+        run: bash scripts/measure-memory-bound.sh 30 2097152

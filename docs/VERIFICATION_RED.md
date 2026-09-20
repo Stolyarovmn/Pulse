@@ -55,6 +55,7 @@
 | PULSE-079 | `drawing_after_a_read_does_not_block_the_writer` + контрольный `holding_the_guard_across_a_draw_does_block_the_writer` | pulse-tui | кадр удерживал read-замок истории всю отрисовку: писатель ждал её окончания (в опыте — 400 мс) | FIXED в PR-16 |
 | PULSE-015 | `agent_rss_follows_kernel_page_size` + `process_rss_without_status_follows_kernel_page_size` | pulse-collect | размер страницы был константой 4096: на ядре с 64 КиБ страницами RSS занижался в шестнадцать раз | FIXED в PR-17 |
 | PULSE-085 | `self_metrics_option_changes_the_frame` | pulse-tui | `ui.show_self_metrics` нигде не читалась: включение опции не меняло ни одного кадра | FIXED в PR-18 |
+| PULSE-082 | `scripts/measure-memory-bound.sh` + лейн `.github/workflows/memory.yml` | pulse-cli, pulse-store | живой прогон с бюджетом 2 МиБ: пик истории 2.4 МиБ, вытеснение 9 раз без прогресса; факт был виден только в `scorecard` и не экспортировался | FIXED в PR-22: пик и отказ вытеснения ушли в `/metrics`, контракт «либо в бюджете, либо заявлено» закреплён гейтом |
 | PULSE-001 | пять обязательных команд на `1.85.1` | workspace | `rustc 1.85.1 is not supported by: darling@0.24.1 requires rustc 1.88.0; instability@0.3.13 requires rustc 1.88` | FIXED в PR-01 |
 
 ### PULSE-039: почему тест зелёный
@@ -74,7 +75,7 @@ warm-слоя показала обратное: `History::rate` считает 
 | Finding | Причина | Куда уходит |
 |---|---|---|
 | PULSE-009 (TOCTOU между проверкой и `kill`) | детерминированного репродьюсера гонки ядра не существует; закрыт конструктивно | FIXED в PR-20: сигнал идёт через `pidfd_open`+`pidfd_send_signal`, живой тест `live_signal_reaches_the_child_process` доказывает доставку новым путём; остаточный риск на ядрах < 5.3 записан в `docs/SECURITY.md` §5 |
-| PULSE-067 (ширина в колонках терминала) | требовался переход на unicode-width в собственных помощниках | FIXED в PR-21: `ui::width_of`/`ui::take_columns` считают колонки, тест `width_and_truncation_count_terminal_columns` падает при возврате к счёту символов |
+| PULSE-067 (ширина в колонках терминала) | требовался переход на unicode-width в собственных помощниках | FIXED в PR-21: `ui::width_of`/`ui::take_columns` считают колонки; переведены `truncate`, `breadcrumb`, `section_title`, футер, ячейки таблицы, перенос по словам и хвост `elide_path`. Тесты `width_and_truncation_count_terminal_columns` и `path_is_elided_by_segments` падают при возврате к счёту символов |
 | PULSE-069 (advisory `lru 0.12.5`) | обновление невозможно: `ratatui 0.29` требует `^0.12`, исправления вышли в `0.16.3`/`0.18.2`; оба пути (`IterMut`, паникующий `Drop` ключа) в графе недостижимы | ACCEPTED в PR-19: обоснование в `docs/SECURITY.md` §13.1, поимённые `--ignore` и страж области исключения в `supply-chain.yml` |
 
 ## Инструменты проверки

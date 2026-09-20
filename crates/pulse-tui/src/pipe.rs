@@ -793,10 +793,22 @@ pub fn elide_path(path: &str) -> String {
             }
         }
     }
-    let tail: String = path
-        .chars()
-        .skip(path.chars().count().saturating_sub(INNER - 1))
-        .collect();
+    // Хвост набирается с конца по колонкам, а не по символам: у пути с
+    // широкими знаками счёт символов дал бы строку вдвое шире отведённого
+    // места, и ряд разъехался бы (PULSE-067). Знак, который не помещается
+    // целиком, не берётся: половины широкого символа не существует.
+    let budget = INNER.saturating_sub(1);
+    let mut used = 0_usize;
+    let mut taken = 0_usize;
+    for ch in path.chars().rev() {
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + w > budget {
+            break;
+        }
+        used += w;
+        taken += 1;
+    }
+    let tail: String = path.chars().skip(path.chars().count() - taken).collect();
     format!("…{tail}")
 }
 
@@ -1609,6 +1621,21 @@ mod tests {
             "путь сокращается по сегментам, а не обрезается посередине"
         );
         assert_eq!(elide_path("/short"), "/short");
+
+        // PULSE-067: хвост считается в колонках. Путь из одного длинного
+        // сегмента идёт в ветку обрезки с конца, и счёт символов дал бы
+        // строку вдвое шире отведённого места.
+        let wide = "/データベース設定ファイル置き場ログ出力先ディレクトリ";
+        let elided = elide_path(wide);
+        assert!(
+            crate::ui::width_of(&elided) <= INNER,
+            "сокращённый путь обязан помещаться в {INNER} колонок, занято {}: {elided:?}",
+            crate::ui::width_of(&elided)
+        );
+        assert!(
+            elided.starts_with('…'),
+            "обрезка с конца обязана быть видна"
+        );
     }
 
     fn build_stub() -> Vec<Node> {

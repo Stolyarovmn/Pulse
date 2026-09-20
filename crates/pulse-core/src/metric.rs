@@ -334,6 +334,8 @@ metrics! {
     AGENT_EXPORT_REJECTED      = 205, "agent_export_requests_rejected", Counter, Count, Agent, Always, "Отклонённые HTTP-запросы экспорта";
     AGENT_REDACTIONS           = 206, "agent_redactions", Counter, Count, Agent, Always, "Число скрытых потенциальных секретов";
     AGENT_COLLECTOR_TRUNCATIONS = 207, "agent_collector_truncations", Counter, Count, Agent, Always, "Такты, где сбор был неполон из-за настроенного бюджета";
+    AGENT_HISTORY_PEAK_BYTES   = 208, "agent_history_peak_bytes", Gauge, Bytes, Agent, Always, "Наибольший наблюдавшийся объём истории";
+    AGENT_EVICTION_NO_PROGRESS = 209, "agent_history_eviction_no_progress", Counter, Count, Agent, Always, "Такты, где вытеснение не смогло освободить место под бюджет";
 }
 
 /// Метрики, которым нужен длинный ретеншн — тёплый слой истории.
