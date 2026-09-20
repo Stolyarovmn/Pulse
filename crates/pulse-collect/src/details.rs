@@ -16,6 +16,13 @@ use pulse_core::redact::sanitize_display;
 
 use crate::fs::{FsSource, FsSourceExt};
 
+/// Предел работы обхода `/proc/<pid>/fd` за один запрос деталей.
+///
+/// Не путать с `file_limit`: тот ограничивает длину показанного списка, а этот
+/// — число разыменований. Процессу с сотней тысяч дескрипторов иначе
+/// соответствует сотня тысяч syscall на одно нажатие клавиши.
+const FD_BUDGET: usize = 1_024;
+
 /// Чтение деталей процесса из `/proc`.
 #[derive(Debug)]
 pub struct ProcDetails {
@@ -24,15 +31,27 @@ pub struct ProcDetails {
     /// Сколько дескрипторов показывать. Полный список у сервера с тысячей
     /// соединений бесполезен оператору и дорог для чтения.
     file_limit: usize,
+    /// Сколько дескрипторов вообще разрешено просмотреть.
+    fd_budget: usize,
 }
 
 impl ProcDetails {
     #[must_use]
     pub fn new(fs: Arc<dyn FsSource>, proc_root: PathBuf) -> Self {
+        Self::with_budget(fs, proc_root, FD_BUDGET)
+    }
+
+    /// Тот же источник с явным бюджетом обхода.
+    ///
+    /// Нужен проверке bounded work: доказать потолок работы можно только
+    /// бюджетом, заведомо меньшим числа дескрипторов в фикстуре.
+    #[must_use]
+    pub fn with_budget(fs: Arc<dyn FsSource>, proc_root: PathBuf, fd_budget: usize) -> Self {
         ProcDetails {
             fs,
             proc_root,
             file_limit: 12,
+            fd_budget: fd_budget.max(1),
         }
     }
 
@@ -75,10 +94,12 @@ impl ProcessDetailsSource for ProcDetails {
             .ok()
             .map(|path| sanitize_display(&path.to_string_lossy()));
 
-        let (files, socket_inodes) = read_descriptors(self.fs.as_ref(), &root, self.file_limit);
+        let (files, socket_inodes) =
+            read_descriptors(self.fs.as_ref(), &root, self.file_limit, self.fd_budget);
         out.fd_total = files.total;
         out.files = files.files;
         out.restricted = files.restricted;
+        out.fd_truncated = files.truncated;
 
         if !socket_inodes.is_empty() {
             out.ports = listening_ports(self.fs.as_ref(), &root, &socket_inodes);
@@ -103,21 +124,42 @@ struct Descriptors {
     files: Vec<OpenFile>,
     /// Ядро отказало в доступе, а не вернуло пустой каталог.
     restricted: bool,
+    /// Обход остановлен бюджетом: за границей остались непросмотренные
+    /// дескрипторы, поэтому список файлов и портов неполон.
+    truncated: bool,
 }
 
 /// Читает дескрипторы: файлы для показа и inode сокетов для сопоставления.
-fn read_descriptors(fs: &dyn FsSource, root: &Path, limit: usize) -> (Descriptors, Vec<u64>) {
+///
+/// `budget` ограничивает **работу**: и число посещённых записей каталога, и
+/// число разыменований. Оборванный обход обязан заявить себя, иначе частичный
+/// список портов читается как «процесс не слушает».
+fn read_descriptors(
+    fs: &dyn FsSource,
+    root: &Path,
+    limit: usize,
+    budget: usize,
+) -> (Descriptors, Vec<u64>) {
     let mut files: Vec<OpenFile> = Vec::new();
     let mut sockets: Vec<u64> = Vec::new();
     let mut total = 0_usize;
 
-    // Номера собираются потоково: имена дескрипторов как строки не нужны ни
-    // на шаг дольше разбора. Число `read_link` по-прежнему равно числу
-    // дескрипторов — это отдельная находка (PULSE-071).
+    // Номера собираются потоково и не дольше бюджета: обход каталога на сотню
+    // тысяч дескрипторов сам по себе стоит памяти и времени, поэтому он
+    // прекращается сразу за границей, а не после материализации всего списка.
     let mut numbers: Vec<u32> = Vec::new();
+    let mut truncated = false;
     let scanned = fs.scan_dir(&root.join("fd"), &mut |name| {
         if let Ok(fd) = name.to_string_lossy().parse::<u32>() {
             numbers.push(fd);
+        }
+        // Одна запись сверх бюджета — это и есть доказательство, что за
+        // границей что-то осталось. Без неё обход ровно на бюджете заявлял бы
+        // усечение там, где просмотрено всё, и признак перестал бы значить
+        // «данные неполны».
+        if numbers.len() > budget {
+            truncated = true;
+            return false;
         }
         true
     });
@@ -131,11 +173,15 @@ fn read_descriptors(fs: &dyn FsSource, root: &Path, limit: usize) -> (Descriptor
                 total,
                 files,
                 restricted,
+                truncated,
             },
             sockets,
         );
     }
     numbers.sort_unstable();
+    // Лишняя запись служила доказательством усечения, разыменовывать её не
+    // нужно: работа обязана остаться в пределах бюджета.
+    numbers.truncate(budget);
 
     for fd in numbers {
         total += 1;
@@ -161,6 +207,7 @@ fn read_descriptors(fs: &dyn FsSource, root: &Path, limit: usize) -> (Descriptor
             total,
             files,
             restricted: false,
+            truncated,
         },
         sockets,
     )
@@ -537,6 +584,62 @@ mod tests {
         );
         assert_eq!(counts.read_dir, 0, "каталог дескрипторов не обходится");
         assert_eq!(counts.read_link, 0, "ссылки не разыменовываются");
+    }
+
+    /// PULSE-071: бюджет обязан ограничивать выполненную работу, а не только
+    /// показанный список.
+    ///
+    /// `file_limit` резал вывод, но `read_link` выполнялся для каждого
+    /// дескриптора. Процесс с сотней тысяч открытых файлов - обычное дело для
+    /// прокси и баз - превращал одно нажатие Enter в инспекторе в сотню тысяч
+    /// системных вызовов.
+    #[test]
+    fn descriptor_scan_work_is_bounded_by_budget() {
+        const TOTAL: usize = 20_000;
+        const BUDGET: usize = 64;
+
+        let mut fs = FixtureFs::new()
+            .file("/proc/42/stat", &stat_line(42, START))
+            .file("/proc/42/status", STATUS)
+            .file("/etc/passwd", PASSWD);
+        for fd in 0..TOTAL {
+            fs = fs.link(&format!("/proc/42/fd/{fd}"), &format!("/data/file-{fd}"));
+        }
+
+        let counting = crate::test_support::CountingFs::new(Arc::new(fs));
+        let source =
+            ProcDetails::with_budget(Arc::new(counting.clone()), PathBuf::from("/proc"), BUDGET);
+        let details = source.details(id(42));
+        let counts = counting.counts();
+
+        assert!(
+            counts.read_link <= BUDGET as u64 + 2,
+            "разыменований обязано быть не больше бюджета, выполнено: {}",
+            counts.read_link
+        );
+        assert!(
+            counts.dir_entries <= BUDGET as u64 + 8,
+            "обход каталога обязан прекратиться на бюджете, посещено: {}",
+            counts.dir_entries
+        );
+        assert!(
+            details.fd_truncated,
+            "оборванный обход обязан заявляться, иначе частичный список выдаётся за полный"
+        );
+    }
+
+    /// Обратная сторона предыдущего теста: пока дескрипторов меньше бюджета,
+    /// усечение заявлять нельзя - иначе признак обесценится и его перестанут
+    /// читать.
+    #[test]
+    fn descriptor_scan_within_budget_is_not_truncated() {
+        let source = ProcDetails::new(Arc::new(fixture()), PathBuf::from("/proc"));
+        let details = source.details(id(42));
+        assert!(
+            !details.fd_truncated,
+            "семь дескрипторов в бюджет помещаются"
+        );
+        assert_eq!(details.fd_total, 7);
     }
 
     /// Живая проверка на настоящем `/proc`, а не на фикстуре: тест сам

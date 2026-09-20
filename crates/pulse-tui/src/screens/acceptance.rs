@@ -2037,6 +2037,7 @@ fn process_inspector_answers_user_exe_and_ports() {
                     port: 80,
                 }],
                 restricted: false,
+                fd_truncated: false,
                 identity_changed: false,
             }
         }

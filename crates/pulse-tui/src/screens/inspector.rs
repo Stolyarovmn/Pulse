@@ -314,9 +314,15 @@ pub(crate) fn render(
                 Span::styled("restricted: run as root to read", theme.dim()),
             ]));
         } else if !details.files.is_empty() && plan.shows(Priority::P2) {
+            let count = if details.fd_truncated {
+                // Точное число неизвестно: обход остановлен бюджетом.
+                format!("{}+ open, scan truncated", details.fd_total)
+            } else {
+                format!("{} open", details.fd_total)
+            };
             lines.push(Line::from(vec![
                 Span::styled(format!("{:<10}", "files"), theme.dim()),
-                Span::styled(format!("{} open", details.fd_total), theme.dim()),
+                Span::styled(count, theme.dim()),
             ]));
             for file in details.files.iter().take(6) {
                 lines.push(Line::from(vec![

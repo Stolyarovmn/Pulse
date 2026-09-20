@@ -565,6 +565,14 @@ fn ports(
     let mut out: Vec<String> = if details.ports.is_empty() {
         if details.restricted {
             vec!["restricted: нет прав".to_string()]
+        } else if details.fd_truncated {
+            // «Не слушает» здесь было бы неправдой: за границей бюджета
+            // остались непросмотренные дескрипторы, среди них мог быть
+            // слушающий сокет.
+            vec![format!(
+                "неполно: просмотрено {} дескрипторов",
+                details.fd_total
+            )]
         } else {
             vec!["не слушает".to_string()]
         }
@@ -603,11 +611,15 @@ fn files(
         .filter(|file| file.is_regular())
         .map(|file| file.target.as_str())
         .collect();
-    let mut out = vec![format!(
-        "{} из {} дескрипторов",
-        regular.len(),
-        details.fd_total
-    )];
+    let mut out = vec![if details.fd_truncated {
+        format!(
+            "{} из {}+ дескрипторов (обход оборван бюджетом)",
+            regular.len(),
+            details.fd_total
+        )
+    } else {
+        format!("{} из {} дескрипторов", regular.len(), details.fd_total)
+    }];
     for path in regular.iter().take(MAX_VALUES - 1) {
         out.push(elide_path(path));
     }

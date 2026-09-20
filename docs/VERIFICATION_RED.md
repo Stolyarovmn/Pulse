@@ -50,6 +50,7 @@
 | PULSE-064 | `equal_display_names_of_distinct_units_do_not_fold_together` + `equal_process_names_without_owner_remain_separate` | pulse-tui | system/user `dbus.socket` склеивались в одну строку по display name | FIXED в PR-12 |
 | PULSE-065 | `main_process_is_oldest_not_smallest_pid` + подпись в `unit_resolves_processes_that_are_its_siblings` | pulse-tui | минимальный PID выбирал нового воркера после оборота счётчика и выдавал эвристику за фактический MainPID | FIXED в PR-12 |
 | PULSE-080 | `proc_walk_work_is_bounded_by_max_processes` + `cgroup_child_listing_is_bounded_by_budget` | pulse-collect | обход материализовал весь каталог и применял бюджет уже после: 20 000 записей `/proc` при лимите 64 | FIXED в PR-07c |
+| PULSE-071 | `descriptor_scan_work_is_bounded_by_budget` + `descriptor_scan_within_budget_is_not_truncated` | pulse-collect | `read_link` выполнялся для каждого дескриптора: 20 000 разыменований при бюджете 64, усечение не заявлялось | FIXED в PR-14 |
 | PULSE-001 | пять обязательных команд на `1.85.1` | workspace | `rustc 1.85.1 is not supported by: darling@0.24.1 requires rustc 1.88.0; instability@0.3.13 requires rustc 1.88` | FIXED в PR-01 |
 
 ### PULSE-039: почему тест зелёный
