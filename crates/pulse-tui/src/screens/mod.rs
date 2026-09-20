@@ -365,10 +365,10 @@ fn render_footer(
     let mut spans = vec![Span::styled(hints.clone(), theme.dim())];
     if app.show_self_metrics {
         let self_cost = self_metrics_text(snapshot);
-        let used = u16::try_from(hints.chars().count() + self_cost.chars().count() + 2)
-            .unwrap_or(u16::MAX);
+        let used =
+            u16::try_from(ui::width_of(&hints) + ui::width_of(&self_cost) + 2).unwrap_or(u16::MAX);
         if used <= area.width {
-            let gap = usize::from(area.width) - hints.chars().count() - self_cost.chars().count();
+            let gap = usize::from(area.width) - ui::width_of(&hints) - ui::width_of(&self_cost);
             spans.push(Span::styled(" ".repeat(gap), theme.dim()));
             spans.push(Span::styled(self_cost, theme.dim()));
         }

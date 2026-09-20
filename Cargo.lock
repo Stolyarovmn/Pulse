@@ -642,6 +642,7 @@ dependencies = [
  "ratatui",
  "signal-hook",
  "tracing",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]

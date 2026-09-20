@@ -10,6 +10,38 @@
 
 use crate::layout::{Compression, FooterPreset, HeaderPreset};
 use crate::theme::Capability;
+use unicode_width::UnicodeWidthStr;
+
+/// Ширина строки в колонках терминала.
+///
+/// Не число символов: CJK-иероглиф и эмодзи занимают две колонки, а
+/// комбинирующий знак — ноль. Раскладка, посчитанная по `chars().count()`,
+/// на таких именах разъезжается: колонки таблицы сдвигаются, рамки не
+/// сходятся, строка вылезает за кадр (PULSE-067).
+#[must_use]
+pub fn width_of(value: &str) -> usize {
+    UnicodeWidthStr::width(value)
+}
+
+/// Наибольший префикс, укладывающийся в заданное число колонок.
+///
+/// Символ, который не помещается целиком, не берётся вовсе: половины
+/// широкого знака в терминале не существует, и попытка её нарисовать сдвигает
+/// всю строку.
+#[must_use]
+pub fn take_columns(value: &str, columns: usize) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut used = 0_usize;
+    for ch in value.chars() {
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + w > columns {
+            break;
+        }
+        used += w;
+        out.push(ch);
+    }
+    out
+}
 
 /// Маркер выбранной строки (раздел 136).
 ///
@@ -52,10 +84,10 @@ pub fn section_title(title: &str, width: u16, rules: bool, capability: Capabilit
     let width = usize::from(width);
     // Заголовок, пробел и хотя бы четыре символа линии, иначе линия бессмысленна.
     let min_tail = 4;
-    if title.chars().count() + 1 + min_tail > width {
+    if width_of(title) + 1 + min_tail > width {
         return title.to_string();
     }
-    let tail = width - title.chars().count() - 1;
+    let tail = width - width_of(title) - 1;
     let mut line = String::with_capacity(width);
     line.push_str(title);
     line.push(' ');
@@ -78,7 +110,7 @@ pub fn rule(width: u16, capability: Capability) -> String {
 /// байтовая обрезка ломала бы UTF-8. Многоточие в ASCII-режиме - три точки.
 #[must_use]
 pub fn truncate(value: &str, width: usize, capability: Capability) -> String {
-    let count = value.chars().count();
+    let count = width_of(value);
     if count <= width {
         return value.to_string();
     }
@@ -87,12 +119,12 @@ pub fn truncate(value: &str, width: usize, capability: Capability) -> String {
     } else {
         "…"
     };
-    let ellipsis_len = ellipsis.chars().count();
+    let ellipsis_len = width_of(ellipsis);
     if width <= ellipsis_len {
-        return value.chars().take(width).collect();
+        return take_columns(value, width);
     }
     let keep = width - ellipsis_len;
-    let mut out: String = value.chars().take(keep).collect();
+    let mut out: String = take_columns(value, keep);
     out.push_str(ellipsis);
     out
 }
@@ -114,7 +146,7 @@ pub fn breadcrumb(parts: &[String], width: usize, capability: Capability) -> Str
     };
 
     let full = parts.join(sep);
-    if full.chars().count() <= width {
+    if width_of(&full) <= width {
         return full;
     }
 
@@ -126,13 +158,13 @@ pub fn breadcrumb(parts: &[String], width: usize, capability: Capability) -> Str
         parts.len().checked_sub(2).and_then(|i| parts.get(i)),
     ) {
         let medium = format!("{first}{sep}{gap}{sep}{previous}{sep}{last}");
-        if medium.chars().count() <= width {
+        if width_of(&medium) <= width {
             return medium;
         }
     }
 
     let narrow = format!("{gap}{sep}{last}");
-    if narrow.chars().count() <= width {
+    if width_of(&narrow) <= width {
         return narrow;
     }
     truncate(last, width, capability)
@@ -224,7 +256,7 @@ pub fn footer_line(
             .collect::<Vec<String>>()
             .join("  ")
     };
-    while parts.len() > 1 && draw(&parts).chars().count() > width {
+    while parts.len() > 1 && width_of(&draw(&parts)) > width {
         // Сначала уступает Commands/Search, top-level map и Help остаются.
         let remove = parts
             .iter()
@@ -234,7 +266,7 @@ pub fn footer_line(
         parts.remove(remove);
     }
     let line = draw(&parts);
-    if line.chars().count() > width {
+    if width_of(&line) > width {
         truncate(&line, width, Capability::Ascii)
     } else {
         line
@@ -296,6 +328,36 @@ mod tests {
         let cyrillic = truncate("сервис-очень-длинное-имя", 10, Capability::TrueColor);
         assert_eq!(cyrillic.chars().count(), 10);
         assert!(cyrillic.ends_with('…'));
+    }
+
+    /// PULSE-067: ширина считается в колонках терминала, а не в символах.
+    ///
+    /// Имя контейнера или юнита может быть на японском, а в командной строке
+    /// встречается эмодзи. Каждый такой знак занимает две колонки: раскладка
+    /// по числу символов рисовала строку вдвое шире отведённого места, и
+    /// колонки таблицы разъезжались.
+    #[test]
+    fn width_and_truncation_count_terminal_columns() {
+        // Шесть символов, двенадцать колонок.
+        let wide = "データベース";
+        assert_eq!(wide.chars().count(), 6);
+        assert_eq!(width_of(wide), 12);
+
+        let cut = truncate(wide, 8, Capability::TrueColor);
+        assert!(
+            width_of(&cut) <= 8,
+            "усечённая строка обязана помещаться в 8 колонок, занято {}: {cut:?}",
+            width_of(&cut)
+        );
+        assert!(cut.ends_with('…'));
+
+        // Половины широкого знака не бывает: он либо входит целиком, либо нет.
+        assert_eq!(take_columns(wide, 5), "デー");
+        assert_eq!(width_of(&take_columns(wide, 5)), 4);
+
+        // Кириллица — одна колонка на знак, прежнее поведение сохраняется.
+        let cyrillic = truncate("сервис-очень-длинное-имя", 10, Capability::TrueColor);
+        assert_eq!(width_of(&cyrillic), 10);
     }
 
     #[test]

@@ -781,14 +781,14 @@ fn resources(snapshot: &Snapshot, entity: EntityId) -> Vec<String> {
 /// путь. Если сегментами не помещается, режем по границе с явным знаком.
 #[must_use]
 pub fn elide_path(path: &str) -> String {
-    if path.chars().count() <= INNER {
+    if crate::ui::width_of(path) <= INNER {
         return path.to_string();
     }
     let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     if let (Some(head), Some(tail)) = (parts.first(), parts.last()) {
         if parts.len() > 2 {
             let candidate = format!("/{head}/…/{tail}");
-            if candidate.chars().count() <= INNER {
+            if crate::ui::width_of(&candidate) <= INNER {
                 return candidate;
             }
         }
@@ -810,14 +810,14 @@ fn wrap(value: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return Vec::new();
     }
-    if value.chars().count() <= width {
+    if crate::ui::width_of(value) <= width {
         return vec![value.to_string()];
     }
     let mut out: Vec<String> = Vec::new();
     let mut line = String::new();
     for word in value.split_whitespace() {
-        let word_len = word.chars().count();
-        let line_len = line.chars().count();
+        let word_len = crate::ui::width_of(word);
+        let line_len = crate::ui::width_of(&line);
         if line.is_empty() {
             if word_len <= width {
                 line.push_str(word);
@@ -988,7 +988,7 @@ fn render_indent(
     out.push((head, None));
     let label_width = Branch::ALL
         .iter()
-        .map(|branch| branch.label().chars().count())
+        .map(|branch| crate::ui::width_of(branch.label()))
         .max()
         .unwrap_or(8);
     // Ширина колонки считается с иконкой: иначе включение набора сдвигает
@@ -1136,7 +1136,7 @@ fn single_box(node: &Node, selected: Branch, style: Look) -> Vec<RenderedLine> {
         }
         lead
     });
-    while head.chars().count() < BOX_WIDTH - 1 {
+    while crate::ui::width_of(&head) < BOX_WIDTH - 1 {
         head.push(set.horizontal);
     }
     let head: String = head.chars().take(BOX_WIDTH - 1).collect();
@@ -1147,13 +1147,13 @@ fn single_box(node: &Node, selected: Branch, style: Look) -> Vec<RenderedLine> {
             // Путь в боксе сокращается по сегментам, а не рвётся по границе:
             // `/home/user/.cache/` и `pulse-target/debug` читаются как два
             // разных пути, которых на диске нет.
-            let value = if value.starts_with('/') && value.chars().count() > INNER {
+            let value = if value.starts_with('/') && crate::ui::width_of(value) > INNER {
                 elide_path(value)
             } else {
                 value.clone()
             };
             for chunk in wrap(&value, INNER) {
-                let pad = INNER.saturating_sub(chunk.chars().count());
+                let pad = INNER.saturating_sub(crate::ui::width_of(&chunk));
                 out.push((
                     format!(
                         "{} {chunk}{} {}",

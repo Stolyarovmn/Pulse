@@ -177,7 +177,7 @@ pub fn truncate(text: &str, width: usize) -> String {
     if width == 0 {
         return String::new();
     }
-    if text.chars().count() <= width {
+    if crate::ui::width_of(text) <= width {
         return text.to_string();
     }
     let mut out: String = text.chars().take(width.saturating_sub(1)).collect();
@@ -222,7 +222,7 @@ pub fn sparkline(points: &[(Timestamp, f64)], width: usize, theme: &Theme) -> St
         out.push(blocks.get(level).copied().unwrap_or('_'));
     }
     // Дополняем слева, чтобы график был выровнен по правому краю.
-    let missing = width.saturating_sub(out.chars().count());
+    let missing = width.saturating_sub(crate::ui::width_of(&out));
     if missing > 0 {
         let mut padded = " ".repeat(missing);
         padded.push_str(&out);

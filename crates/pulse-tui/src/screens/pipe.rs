@@ -191,10 +191,10 @@ fn render_pipe(
 }
 
 fn truncate(value: &str, width: usize) -> String {
-    if value.chars().count() <= width {
+    if crate::ui::width_of(value) <= width {
         return value.to_string();
     }
-    let mut out: String = value.chars().take(width.saturating_sub(1)).collect();
+    let mut out: String = crate::ui::take_columns(value, width.saturating_sub(1));
     out.push('…');
     out
 }

@@ -202,7 +202,7 @@ pub fn plan(columns: &[Column], available: u16) -> TablePlan {
 pub fn cell(value: &str, width: u16, align: Align, capability: Capability) -> String {
     let width = usize::from(width);
     let value = ui::truncate(value, width, capability);
-    let len = value.chars().count();
+    let len = ui::width_of(&value);
     if len >= width {
         return value;
     }

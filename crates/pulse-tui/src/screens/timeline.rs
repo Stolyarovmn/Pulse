@@ -231,14 +231,14 @@ fn rail_labels(marks: &[RailMark], width: usize) -> String {
     let mut out = String::new();
     for mark in marks {
         let label = mark.at.to_string();
-        let start_at = mark.column.saturating_sub(label.chars().count() / 2);
-        if start_at < out.chars().count() + 1 {
+        let start_at = mark.column.saturating_sub(crate::ui::width_of(&label) / 2);
+        if start_at < crate::ui::width_of(&out) + 1 {
             continue;
         }
-        if start_at + label.chars().count() > width {
+        if start_at + crate::ui::width_of(&label) > width {
             break;
         }
-        out.push_str(&" ".repeat(start_at - out.chars().count()));
+        out.push_str(&" ".repeat(start_at - crate::ui::width_of(&out)));
         out.push_str(&label);
     }
     out
@@ -266,7 +266,7 @@ fn render_rail(
     let width = usize::from(area.width).max(8);
     let left = start.to_string();
     let padding = width
-        .saturating_sub(left.chars().count() + label.chars().count())
+        .saturating_sub(crate::ui::width_of(&left) + crate::ui::width_of(&label))
         .max(1);
     let line_char = if ascii { '-' } else { '─' };
     let start_mark = if ascii { '*' } else { '●' };
