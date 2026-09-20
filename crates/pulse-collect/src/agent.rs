@@ -19,6 +19,7 @@ pub struct SelfCollector {
     fs: Arc<dyn FsSource>,
     proc_root: PathBuf,
     clock_ticks: f64,
+    page_size: f64,
 }
 
 impl SelfCollector {
@@ -28,7 +29,18 @@ impl SelfCollector {
             fs,
             proc_root,
             clock_ticks: (clock_ticks.max(1)) as f64,
+            page_size: crate::page_size_bytes() as f64,
         }
+    }
+
+    /// Явный размер страницы.
+    ///
+    /// Нужен проверке: на обычном x86_64 ядро сообщает 4096, и дефект
+    /// «страница захардкожена» на нём неотличим от корректного кода.
+    #[must_use]
+    pub fn with_page_size(mut self, bytes: u64) -> Self {
+        self.page_size = bytes.max(1) as f64;
+        self
     }
 }
 
@@ -46,7 +58,7 @@ impl Collector for SelfCollector {
                 .nth(1)
                 .and_then(|v| v.parse::<f64>().ok())
             {
-                ctx.sample(host, ids::AGENT_RSS, rss_pages * 4096.0);
+                ctx.sample(host, ids::AGENT_RSS, rss_pages * self.page_size);
             }
         }
 
@@ -100,8 +112,43 @@ mod tests {
             .find(|s| s.series == SeriesKey::new(host, ids::AGENT_CPU_SECONDS))
             .map(|s| s.value)
             .unwrap_or_default();
-        assert!((rss - 2500.0 * 4096.0).abs() < 1.0, "rss = {rss}");
+        let page = crate::page_size_bytes() as f64;
+        assert!((rss - 2500.0 * page).abs() < 1.0, "rss = {rss}");
         assert!((cpu - 0.5).abs() < 1e-9, "cpu = {cpu}");
+    }
+
+    /// PULSE-015: размер страницы берётся у ядра, а не из константы.
+    ///
+    /// На ядрах aarch64 и ppc64le с 64 КиБ страницами хардкод 4096 занижал
+    /// RSS в шестнадцать раз, и метрика самонаблюдения врала уверенно и
+    /// молча. Обычный x86_64 имеет ровно 4096, поэтому дефект проверяется
+    /// явно подставленным размером.
+    #[test]
+    fn agent_rss_follows_kernel_page_size() {
+        const PAGE: u64 = 65_536;
+
+        let fs =
+            Arc::new(FixtureFs::new().file("/proc/self/statm", "10000 2500 500 100 0 1000 0\n"));
+        let mut collector =
+            SelfCollector::new(fs, PathBuf::from("/proc"), 100).with_page_size(PAGE);
+        let mut graph = EntityGraph::new("boot", "host", Timestamp::from_millis(1_000));
+        graph.begin_tick(Timestamp::from_millis(2_000));
+        {
+            let mut ctx = CollectCtx::new(&mut graph, 1.0);
+            collector.collect(&mut ctx).expect("сбор самометрик");
+        }
+        let batch = graph.end_tick();
+        let host = graph.host();
+        let rss = batch
+            .samples
+            .iter()
+            .find(|s| s.series == SeriesKey::new(host, ids::AGENT_RSS))
+            .map(|s| s.value)
+            .unwrap_or_default();
+        assert!(
+            (rss - 2500.0 * PAGE as f64).abs() < 1.0,
+            "RSS обязан считаться по странице ядра: {rss}"
+        );
     }
 
     #[test]

@@ -72,6 +72,8 @@ pub struct ProcessCollector {
     toctou_drops: u64,
     /// Скрыто потенциальных секретов за такт (складывается в самометрику).
     redactions: u64,
+    /// Размер страницы ядра: `stat` сообщает RSS в страницах.
+    page_size: f64,
 }
 
 impl ProcessCollector {
@@ -94,7 +96,18 @@ impl ProcessCollector {
             previous: HashMap::new(),
             toctou_drops: 0,
             redactions: 0,
+            page_size: crate::page_size_bytes() as f64,
         }
+    }
+
+    /// Явный размер страницы.
+    ///
+    /// Нужен проверке: обычный x86_64 CI имеет ровно 4096, и захардкоженная
+    /// константа на нём неотличима от значения, полученного у ядра.
+    #[must_use]
+    pub fn with_page_size(mut self, bytes: u64) -> Self {
+        self.page_size = bytes.max(1) as f64;
+        self
     }
 
     /// Число отброшенных из-за гонки PID.
@@ -333,7 +346,7 @@ impl Collector for ProcessCollector {
             );
 
             // Память: VmRSS точнее, чем rss_pages, но доступен не всегда.
-            let page_size = 4096.0;
+            let page_size = self.page_size;
             let rss = status
                 .as_deref()
                 .and_then(|text| parse::field(text, "VmRSS"))
@@ -476,6 +489,30 @@ mod tests {
             collector.collect(&mut ctx).expect("сбор процессов");
         }
         graph.end_tick()
+    }
+
+    /// PULSE-015: RSS процесса из `stat` считается в страницах ядра.
+    ///
+    /// Хардкод 4096 занижал память в шестнадцать раз на ядрах с 64 КиБ
+    /// страницами. `VmRSS` из `status` доступен не всегда, и тогда работает
+    /// именно этот путь, поэтому фикстура даёт только `stat`.
+    #[test]
+    fn process_rss_without_status_follows_kernel_page_size() {
+        const PAGE: u64 = 65_536;
+        const RSS_PAGES: f64 = 4_096.0;
+
+        let fs = FixtureFs::new()
+            .inode("/sys/fs/cgroup", 1)
+            .file("/proc/100/stat", &stat_line(100, "nginx", 10, 5_000));
+        let mut collector = collector(Arc::new(fs)).with_page_size(PAGE);
+        let mut graph = EntityGraph::new("boot", "host", Timestamp::from_millis(1_000));
+        let batch = run(&mut collector, &mut graph, 2_000);
+        let entity = process_id(&graph);
+        let rss = value(&batch, SeriesKey::new(entity, ids::PROC_RSS)).expect("RSS процесса");
+        assert!(
+            (rss - RSS_PAGES * PAGE as f64).abs() < 1.0,
+            "RSS обязан считаться по странице ядра: {rss}"
+        );
     }
 
     fn value(batch: &TickBatch, key: SeriesKey) -> Option<f64> {
