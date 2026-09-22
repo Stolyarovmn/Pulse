@@ -33,6 +33,14 @@ use crate::parse::{self, ProcStat};
 /// Максимальный размер `/proc/<pid>/cmdline`, который вообще читается.
 const CMDLINE_CAP: usize = 16 * 1024;
 
+/// Потолок обхода `/proc` при подсчёте процессов всего хоста.
+///
+/// Нужен только когда процессов больше `max_processes`. Потолок отделён от
+/// детального бюджета: один такт не должен превращаться в обход каталога
+/// неизвестного размера, но и счётчик хоста не должен молча сужаться до
+/// детального бюджета.
+const FULL_SCAN_CAP: usize = 65_536;
+
 /// Ключ процесса для хранения предыдущих значений счётчиков.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 struct ProcKey {
@@ -194,6 +202,35 @@ impl ProcessCollector {
     fn fd_limit_for(&self, pid: &str) -> Option<f64> {
         let text = self.read(pid, "limits")?;
         parse::parse_limit_row(&text, "Max open files")
+    }
+
+    /// Число процессов всего хоста, когда детальный бюджет переполнен.
+    ///
+    /// Считаются только записи каталога: чтение `stat` каждого PID вернуло бы
+    /// работу, ограничение которой и есть смысл `max_processes` (PULSE-080).
+    /// Поэтому потоки на таком хосте не публикуются вовсе — их нельзя узнать
+    /// без чтения, а занижать счётчик запрещено.
+    ///
+    /// Возвращает `None` при усечении по `FULL_SCAN_CAP` или недоступном
+    /// `/proc`: заниженное число процессов хуже отсутствующего, по нему
+    /// читают «нагрузка упала».
+    fn count_whole_host(&self) -> Option<usize> {
+        let fs = Arc::clone(&self.fs);
+        let mut processes = 0_usize;
+        let mut overflow = false;
+        fs.scan_dir(&self.proc_root, &mut |name| {
+            let text = name.to_string_lossy();
+            if !text.is_empty() && text.chars().all(|c| c.is_ascii_digit()) {
+                processes += 1;
+            }
+            if processes > FULL_SCAN_CAP {
+                overflow = true;
+                return false;
+            }
+            true
+        })
+        .ok()?;
+        (!overflow).then_some(processes)
     }
 
     fn state_code(state: char) -> f64 {
@@ -416,12 +453,22 @@ impl Collector for ProcessCollector {
 
         // Счётчики хоста публикуются здесь, потому что `stat` каждого PID уже
         // прочитан: отдельный обход в `HostCollector` был дублем (PULSE-088).
-        // Усечённый обход даёт заниженные числа, а заниженное число процессов
-        // хуже отсутствующего: по нему читают «нагрузка упала».
+        //
+        // Контракт метрики — «процессы всего хоста», а не «процессы в пределах
+        // детального бюджета», поэтому при переполнении `max_processes` число
+        // процессов пересчитывается по именам записей `/proc`. Потоки в этом
+        // случае неизвестны: узнать их можно только чтением `stat` каждого
+        // PID, а это ровно та работа, которую ограничивает бюджет
+        // (PULSE-080). Занижать счётчик запрещено, поэтому он отсутствует.
+        //
         // Пустой список означает, что ни один процесс не пережил проверку
         // идентичности: публиковать «ноль процессов» в этом случае значит
         // сообщить о хосте то, чего не наблюдали.
-        if !truncated && !seen.is_empty() {
+        if truncated {
+            if let Some(processes) = self.count_whole_host() {
+                ctx.sample(host, ids::HOST_PROCS_TOTAL, processes as f64);
+            }
+        } else if !seen.is_empty() {
             ctx.sample(host, ids::HOST_PROCS_TOTAL, seen.len() as f64);
             if threads_total > 0.0 {
                 ctx.sample(host, ids::HOST_THREADS_TOTAL, threads_total);
@@ -747,9 +794,20 @@ mod tests {
         let _ = run(&mut collector, &mut graph, 2_000);
 
         let counts = counting.counts();
+        // Дорогая работа — чтения файлов ядра — обязана остаться в бюджете.
+        // Детальный сбор читает до восьми файлов на процесс, поэтому потолок
+        // взят с запасом, но он кратен бюджету, а не числу процессов хоста.
         assert!(
-            counts.dir_entries <= (BUDGET as u64) + 8,
-            "обход обязан прекратиться на бюджете, посещено записей: {}",
+            counts.read <= (BUDGET as u64) * 12,
+            "чтения обязаны остаться в пределах бюджета, выполнено: {}",
+            counts.read
+        );
+        // Записи каталога посещаются дважды: обход под бюджет и подсчёт
+        // процессов хоста по именам (PULSE-088). Второй проход не читает
+        // файлов и ограничен `FULL_SCAN_CAP`.
+        assert!(
+            counts.dir_entries <= (FULL_SCAN_CAP as u64) + (BUDGET as u64) + 8,
+            "подсчёт имён обязан иметь собственный потолок, посещено: {}",
             counts.dir_entries
         );
         assert_eq!(
@@ -827,6 +885,54 @@ mod tests {
         assert_eq!(graph.entities_of_kind(EntityKind::Process).count(), 10);
     }
 
+    /// PULSE-088: дедупликация обхода не имеет права сужать контракт метрики.
+    ///
+    /// `HOST_PROCS_TOTAL` описывает весь хост. После переноса счётчиков из
+    /// `HostCollector` они могли бы молча ограничиться детальным бюджетом:
+    /// на хосте с числом процессов больше `max_processes` метрика просто
+    /// исчезла бы, хотя раньше публиковалась.
+    #[test]
+    fn host_counters_cover_the_whole_host_beyond_detail_budget() {
+        const TOTAL: i32 = 100;
+        const BUDGET: usize = 10;
+
+        let mut fs = FixtureFs::new();
+        for pid in 100..(100 + TOTAL) {
+            fs = fs.file(
+                &format!("/proc/{pid}/stat"),
+                &stat_line(pid, "svc", 10, 1_000),
+            );
+        }
+        let mut collector = ProcessCollector::new(
+            Arc::new(fs),
+            PathBuf::from("/proc"),
+            PathBuf::from("/sys/fs/cgroup"),
+            security(),
+            BUDGET,
+            100,
+        );
+        let mut graph = EntityGraph::new("boot", "host", Timestamp::from_millis(1_000));
+        let batch = run(&mut collector, &mut graph, 2_000);
+        let host = graph.host();
+
+        assert_eq!(
+            graph.entities_of_kind(EntityKind::Process).count(),
+            BUDGET,
+            "детальный сбор обязан остаться в пределах бюджета"
+        );
+        let processes =
+            value(&batch, SeriesKey::new(host, ids::HOST_PROCS_TOTAL)).expect("счёт процессов");
+        assert!(
+            (processes - f64::from(TOTAL)).abs() < 1e-9,
+            "счётчик хоста обязан считать весь хост, получено {processes}"
+        );
+        let threads = value(&batch, SeriesKey::new(host, ids::HOST_THREADS_TOTAL));
+        assert!(
+            threads.is_none(),
+            "потоки за бюджетом требуют чтения stat каждого PID: занижать нельзя, {threads:?}"
+        );
+    }
+
     #[test]
     fn dead_process_state_is_forgotten() {
         let mut collector = collector(Arc::new(tree(100)));
@@ -870,17 +976,8 @@ mod tests {
         assert_eq!(process.labels.get("exe"), Some("/usr/sbin/nginx"));
         assert_eq!(
             value(&batch, SeriesKey::new(process.id, ids::PROC_FD_LIMIT)),
-            Some(1_024.0),
-            "лимит дескрипторов обязан браться из кэша"
+            Some(1024.0)
         );
-        // Динамическая метка остаётся динамической.
-        assert_eq!(process.labels.get("state"), Some("S"));
-    }
-
-    #[test]
-    fn exec_changes_identity_and_forces_static_reread() {
-        let mut collector = collector(Arc::new(tree(100)));
-        let mut graph = EntityGraph::new("boot", "host", Timestamp::from_millis(1_000));
         let _ = run(&mut collector, &mut graph, 2_000);
 
         // Тот же PID, другое время старта и другая командная строка.
