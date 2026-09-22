@@ -301,6 +301,28 @@ pub(crate) fn render(
                 ),
             ]));
 
+            if ancestry.children_total > 0 {
+                let shown = ancestry
+                    .children
+                    .iter()
+                    .map(|hop| format!("{}({})", hop.name, hop.pid))
+                    .collect::<Vec<_>>()
+                    .join("  ");
+                let hidden = ancestry.children_total - ancestry.children.len();
+                let value = if hidden > 0 {
+                    format!("{} total: {shown}  +{hidden}", ancestry.children_total)
+                } else {
+                    format!("{} total: {shown}", ancestry.children_total)
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{:<10}", "children"), theme.dim()),
+                    Span::styled(
+                        ui::truncate(&value, width.saturating_sub(12), theme.capability),
+                        theme.text(),
+                    ),
+                ]));
+            }
+
             let source = match &ancestry.inference.evidence {
                 Some(evidence) => format!(
                     "{} (evidence: {}({}))",
@@ -419,6 +441,12 @@ pub(crate) fn render(
                     ),
                 ]));
             }
+        }
+        for observation in details.observations() {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{:<10}", "note"), theme.dim()),
+                Span::styled(observation, theme.severity(pulse_core::Severity::Info)),
+            ]));
         }
     }
 

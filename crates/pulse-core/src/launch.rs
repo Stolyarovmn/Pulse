@@ -13,6 +13,10 @@ use crate::{Entity, EntityId, EntityKey, EntityKind, Snapshot};
 /// Максимальная глубина защиты от повреждённой/cyclic цепочки.
 const MAX_DEPTH: usize = 64;
 
+/// Сколько прямых потомков показывать. Остальные учитываются числом:
+/// список из сотни воркеров не отвечает ни на один вопрос.
+pub const CHILDREN_SHOWN: usize = 8;
+
 /// Один подтверждённый шаг родительской цепочки.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessHop {
@@ -82,6 +86,13 @@ pub struct ProcessAncestry {
     pub chain: Vec<ProcessHop>,
     pub end: AncestryEnd,
     pub inference: LaunchInference,
+    /// Прямые потомки цели, не больше [`CHILDREN_SHOWN`].
+    ///
+    /// Вопрос «сколько у сервиса воркеров и кто они» возникает сразу за
+    /// вопросом «кто его запустил», а данные для него уже собраны.
+    pub children: Vec<ProcessHop>,
+    /// Сколько прямых потомков найдено всего: список выше может быть короче.
+    pub children_total: usize,
 }
 
 /// Строит ancestry для process-сущности текущего снимка.
@@ -138,11 +149,39 @@ pub fn process_ancestry(snapshot: &Snapshot, target: EntityId) -> Option<Process
     }
 
     reversed.reverse();
+
+    // Потомки ищутся среди собранных процессов: за пределами бюджета сбора
+    // их не существует для снимка, и признаваться в этом обязано число
+    // `children_total`, а не молчаливо короткий список.
+    let target_pid = match target.key {
+        EntityKey::Process { pid, .. } => pid,
+        _ => return None,
+    };
+    let mut children: Vec<ProcessHop> = by_pid
+        .values()
+        .filter(|entity| {
+            entity
+                .labels
+                .get("ppid")
+                .and_then(|raw| raw.parse::<i32>().ok())
+                == Some(target_pid)
+        })
+        .filter_map(|entity| match entity.key {
+            EntityKey::Process { pid, .. } => Some(hop(entity, pid)),
+            _ => None,
+        })
+        .collect();
+    // Порядок по PID: кадр обязан быть одинаковым от такта к такту.
+    children.sort_by_key(|hop| hop.pid);
+    let children_total = children.len();
+    children.truncate(CHILDREN_SHOWN);
     let inference = infer_source(&reversed);
     Some(ProcessAncestry {
         chain: reversed,
         end,
         inference,
+        children,
+        children_total,
     })
 }
 
@@ -282,6 +321,32 @@ mod tests {
             ancestry.inference.evidence.as_ref().map(|hop| hop.pid),
             Some(100)
         );
+    }
+
+    #[test]
+    fn children_are_listed_and_the_remainder_is_counted() {
+        let mut processes = vec![(1, 0, "systemd"), (100, 1, "nginx")];
+        // Больше, чем показывается: остаток обязан быть числом, а не молчанием.
+        for pid in 200..(200 + CHILDREN_SHOWN as i32 + 3) {
+            processes.push((pid, 100, "worker"));
+        }
+        let snapshot = snapshot(&processes);
+        let ancestry = process_ancestry(&snapshot, id_of(&snapshot, 100)).expect("ancestry");
+
+        assert_eq!(ancestry.children_total, CHILDREN_SHOWN + 3);
+        assert_eq!(ancestry.children.len(), CHILDREN_SHOWN);
+        let pids: Vec<i32> = ancestry.children.iter().map(|hop| hop.pid).collect();
+        let mut sorted = pids.clone();
+        sorted.sort_unstable();
+        assert_eq!(pids, sorted, "порядок обязан быть стабильным между тактами");
+    }
+
+    #[test]
+    fn process_without_children_reports_none() {
+        let snapshot = snapshot(&[(1, 0, "systemd"), (100, 1, "nginx")]);
+        let ancestry = process_ancestry(&snapshot, id_of(&snapshot, 100)).expect("ancestry");
+        assert_eq!(ancestry.children_total, 0);
+        assert!(ancestry.children.is_empty());
     }
 
     #[test]

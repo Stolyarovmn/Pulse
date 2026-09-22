@@ -106,6 +106,43 @@ impl ProcessDetails {
             && self.ports.is_empty()
             && self.fd_total == 0
     }
+
+    /// Наблюдения о контексте процесса, видимые из уже собранных данных.
+    ///
+    /// Это не диагностические правила: у них нет ни порогов, ни гистерезиса,
+    /// ни истории. Каждое — одномоментный факт, который оператор всё равно
+    /// проверяет глазами, спустившись до процесса. Ничего, что требовало бы
+    /// чтения `environ`, здесь нет и быть не может: модель угроз запрещает
+    /// читать окружение чужого процесса (`docs/SECURITY.md` § 4).
+    #[must_use]
+    pub fn observations(&self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+
+        // Ядро дописывает « (deleted)» к цели `exe`, если файл удалён или
+        // заменён при живом процессе: на диске уже другой код, чем в памяти.
+        if self
+            .exe
+            .as_deref()
+            .is_some_and(|exe| exe.ends_with(" (deleted)"))
+        {
+            out.push("исполняемый файл удалён или заменён после запуска");
+        }
+
+        // Публичный bind: слушает не loopback, то есть доступен из сети.
+        if self
+            .ports
+            .iter()
+            .any(|port| port.address == "0.0.0.0" || port.address == "::")
+        {
+            out.push("слушает на всех интерфейсах, а не только на loopback");
+        }
+
+        if self.uid == Some(0) {
+            out.push("выполняется от root");
+        }
+
+        out
+    }
 }
 
 /// Источник деталей процесса.
@@ -151,6 +188,41 @@ impl DetailsCache {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn observations_report_only_what_was_actually_seen() {
+        let quiet = ProcessDetails {
+            uid: Some(1000),
+            exe: Some("/usr/sbin/nginx".into()),
+            ports: vec![Port {
+                protocol: "tcp",
+                address: "127.0.0.1".into(),
+                port: 8080,
+            }],
+            ..ProcessDetails::default()
+        };
+        assert!(
+            quiet.observations().is_empty(),
+            "обычный процесс не имеет права порождать шум: {:?}",
+            quiet.observations()
+        );
+
+        let risky = ProcessDetails {
+            uid: Some(0),
+            exe: Some("/usr/sbin/nginx (deleted)".into()),
+            ports: vec![Port {
+                protocol: "tcp",
+                address: "0.0.0.0".into(),
+                port: 80,
+            }],
+            ..ProcessDetails::default()
+        };
+        let seen = risky.observations();
+        assert_eq!(seen.len(), 3, "три независимых факта: {seen:?}");
+        assert!(seen.iter().any(|note| note.contains("удалён")));
+        assert!(seen.iter().any(|note| note.contains("интерфейсах")));
+        assert!(seen.iter().any(|note| note.contains("root")));
+    }
 
     #[derive(Debug, Default)]
     struct Counting {

@@ -80,6 +80,25 @@ pub fn render_why(snapshot: &Snapshot, pid: i32) -> io::Result<String> {
         out.push_str("Evidence     : no recognised ancestor in collected chain\n");
     }
 
+    if ancestry.children_total > 0 {
+        let shown = ancestry
+            .children
+            .iter()
+            .map(|hop| format!("{}({})", hop.name, hop.pid))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let hidden = ancestry.children_total - ancestry.children.len();
+        let tail = if hidden > 0 {
+            format!(", ... and {hidden} more")
+        } else {
+            String::new()
+        };
+        out.push_str(&format!(
+            "Children     : {} total — {shown}{tail}\n",
+            ancestry.children_total
+        ));
+    }
+
     let ownership = snapshot
         .ancestry(target.id)
         .iter()
