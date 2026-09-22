@@ -275,7 +275,12 @@ impl Collector for ProcessCollector {
         let interval = ctx.interval_secs().max(0.001);
         let mut seen: Vec<ProcKey> = Vec::new();
         let mut threads_total = 0_f64;
-        let truncated = pids.len() >= budget;
+        // Все числовые записи `/proc`, найденные обходом: это population
+        // счётчика хоста. `seen` — подмножество, пережившее проверку
+        // идентичности, и подменять им общее число значило бы менять смысл
+        // метрики на пороге бюджета.
+        let total_pids = pids.len();
+        let truncated = total_pids >= budget;
 
         for pid_str in pids {
             // Фильтр и бюджет уже применены при обходе.
@@ -461,15 +466,24 @@ impl Collector for ProcessCollector {
         // PID, а это ровно та работа, которую ограничивает бюджет
         // (PULSE-080). Занижать счётчик запрещено, поэтому он отсутствует.
         //
-        // Пустой список означает, что ни один процесс не пережил проверку
-        // идентичности: публиковать «ноль процессов» в этом случае значит
-        // сообщить о хосте то, чего не наблюдали.
+        // Множество для счётчика одно и то же по обе стороны порога: все
+        // числовые записи `/proc`. Подставить сюда `seen` значило бы, что на
+        // хосте, колеблющемся около `max_processes`, счётчик прыгает из-за
+        // смены правила, а не из-за роста нагрузки.
+        //
+        // Пустой обход означает, что процессов не наблюдали вовсе:
+        // публиковать «ноль процессов» в этом случае значит сообщить о хосте
+        // то, чего не видели.
         if truncated {
             if let Some(processes) = self.count_whole_host() {
                 ctx.sample(host, ids::HOST_PROCS_TOTAL, processes as f64);
             }
-        } else if !seen.is_empty() {
-            ctx.sample(host, ids::HOST_PROCS_TOTAL, seen.len() as f64);
+        } else if total_pids > 0 {
+            ctx.sample(host, ids::HOST_PROCS_TOTAL, total_pids as f64);
+            // Потоки известны только по процессам, пережившим проверку
+            // идентичности: у отброшенного по гонке PID нет достоверного
+            // `num_threads`. Расхождение с числом процессов возможно, но оно
+            // ограничено `toctou_drops`, который публикуется отдельно.
             if threads_total > 0.0 {
                 ctx.sample(host, ids::HOST_THREADS_TOTAL, threads_total);
             }
@@ -711,7 +725,25 @@ mod tests {
             "процесс не должен попасть в граф"
         );
         assert_eq!(collector.toctou_drops(), 1);
-        assert!(batch.samples.is_empty());
+        // Счётчик хоста считает записи `/proc` и потому остаётся: процесс на
+        // хосте есть, недостоверны лишь его подробности. Запрещено другое —
+        // публиковать метрики самого отброшенного процесса.
+        assert!(
+            batch
+                .samples
+                .iter()
+                .all(|sample| sample.series.entity == graph.host()),
+            "у отброшенного процесса не может быть собственных метрик: {:?}",
+            batch.samples
+        );
+        assert!(
+            value(
+                &batch,
+                SeriesKey::new(graph.host(), ids::HOST_THREADS_TOTAL)
+            )
+            .is_none(),
+            "потоки отброшенного процесса неизвестны"
+        );
     }
 
     #[test]
