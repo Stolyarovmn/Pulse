@@ -158,6 +158,9 @@ cargo run -p pulse-cli -- why 1234
 # A/B diff: собрать короткое окно и сравнить секунду назад с текущим моментом
 cargo run -p pulse-cli -- diff --from 1s --to now
 
+# Профиль фаз такта: куда уходит время на большом узле
+PULSE_PROFILE=1 cargo run -p pulse-cli -- scorecard --seconds 12
+
 # Измерить стоимость агента
 cargo run -p pulse-cli -- scorecard --seconds 10
 

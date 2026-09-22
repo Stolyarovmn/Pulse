@@ -165,6 +165,46 @@ struct StoreStats {
     peak_bytes: u64,
 }
 
+/// Профиль фаз такта, включаемый `PULSE_PROFILE=1`.
+///
+/// Единственная метрика такта — суммарная длительность, поэтому «куда ушли
+/// 391 мс на большом узле» по коду можно только предполагать. Предположение
+/// вместо замера уже давало ложные выводы, а здесь речь о выборе, что
+/// оптимизировать. Шов выключен по умолчанию и ничего не стоит: при
+/// отключённом профиле `note` не пишет ничего.
+#[derive(Debug)]
+struct TickProfile {
+    phases: Option<Vec<(&'static str, f64)>>,
+}
+
+impl TickProfile {
+    fn start() -> Self {
+        let enabled = std::env::var_os("PULSE_PROFILE").is_some_and(|value| value != "0");
+        TickProfile {
+            phases: enabled.then(Vec::new),
+        }
+    }
+
+    fn note(&mut self, name: &'static str, since: Instant) {
+        if let Some(phases) = self.phases.as_mut() {
+            phases.push((name, since.elapsed().as_secs_f64() * 1_000.0));
+        }
+    }
+
+    /// Печатает в stderr: профиль нужен на живом сервере, где TUI не запущен,
+    /// а `tracing` по умолчанию молчит.
+    fn report(&self, total_ms: f64, series: usize) {
+        let Some(phases) = self.phases.as_ref() else {
+            return;
+        };
+        let mut line = format!("tick_profile total={total_ms:.1}ms series={series}");
+        for (name, ms) in phases {
+            line.push_str(&format!(" {name}={ms:.1}"));
+        }
+        eprintln!("{line}");
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn collect_loop(
     config: Config,
@@ -190,15 +230,18 @@ fn collect_loop(
         let now = Timestamp::now();
         graph.begin_tick(now);
 
+        let mut profile = TickProfile::start();
         for collector in &mut collectors {
             let name = collector.name();
             let result;
             let noted;
+            let phase = Instant::now();
             {
                 let mut ctx = CollectCtx::new(&mut graph, config.interval_secs());
                 result = collector.collect(&mut ctx);
                 noted = u64::from(ctx.errors());
             }
+            profile.note(name, phase);
             collector_errors = collector_errors.saturating_add(noted);
             if let Err(error) = result {
                 // Усечение по бюджету — неполнота, а не отказ подсистемы.
@@ -221,6 +264,7 @@ fn collect_loop(
             return;
         }
 
+        let phase = Instant::now();
         let mut batch = graph.end_tick();
         // Окно свежести — два интервала: одно наблюдение на такт плюс запас
         // на дрожание расписания. Наблюдение старше этого окна перестаёт
@@ -234,11 +278,14 @@ fn collect_loop(
             latest.set(sample.series, sample.value);
         }
         latest.retain_entities(&|id| graph.get(id).is_some());
+        profile.note("end_tick+latest", phase);
 
+        let phase = Instant::now();
         let problems = with_history_read(&history, |stored| {
             analyzer.evaluate(&graph, &latest, stored, now)
         });
         batch.events.extend(analyzer.take_events());
+        profile.note("analyze", phase);
 
         ticks_total = ticks_total.saturating_add(1);
 
@@ -248,6 +295,7 @@ fn collect_loop(
         #[cfg(test)]
         delay_after_analysis();
 
+        let phase = Instant::now();
         let (events, store_stats) = with_history_write(&history, |stored| {
             stored.ingest(&batch);
             let events = stored.recent_events(200).into_iter().cloned().collect();
@@ -265,6 +313,7 @@ fn collect_loop(
             };
             (events, stats)
         });
+        profile.note("ingest", phase);
 
         if stop.load(AtomicOrdering::Acquire) {
             return;
@@ -300,8 +349,10 @@ fn collect_loop(
                 .unwrap_or_default(),
             ..AgentStats::default()
         };
+        let phase = Instant::now();
         let mut snapshot =
             Snapshot::build(&graph, latest, problems, events, agent, &hostname, &boot_id);
+        profile.note("snapshot", phase);
 
         // Такт закончен: измерена вся работа - сбор, анализ, запись в историю
         // и построение снимка. Раньше замер останавливался перед записью, и
@@ -317,6 +368,7 @@ fn collect_loop(
         snapshot.agent.tick_duration_p95_ms = latency.p95();
         snapshot.agent.ticks_skipped = ticks_skipped;
         published.store(Arc::new(snapshot));
+        profile.report(full_ms, store_stats.series);
 
         let remaining = interval.saturating_sub(started.elapsed());
         if !remaining.is_zero() && !stop.load(AtomicOrdering::Acquire) {
