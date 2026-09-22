@@ -13,6 +13,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use pulse_core::entity::{Entity, EntityKind};
+use pulse_core::launch::{process_ancestry, AncestryEnd};
 use pulse_core::metric::ids;
 use pulse_core::snapshot::Snapshot;
 
@@ -274,6 +275,78 @@ pub(crate) fn render(
         lines.push(Line::from(spans));
     }
 
+    // WHY IT EXISTS: подтверждённая ppid-цепочка. Источник называется
+    // эвристикой и всегда сопровождается доказательством; ownership-цепочка
+    // unit/cgroup сюда не подмешивается.
+    if entity.kind == EntityKind::Process {
+        lines.push(Line::from(""));
+        lines.push(section(
+            "WHY IT EXISTS (HEURISTIC)",
+            area.width,
+            plan,
+            theme,
+        ));
+        if let Some(ancestry) = process_ancestry(snapshot, entity.id) {
+            let chain = ancestry
+                .chain
+                .iter()
+                .map(|hop| format!("{}({})", hop.name, hop.pid))
+                .collect::<Vec<_>>()
+                .join(" → ");
+            lines.push(Line::from(vec![
+                Span::styled(format!("{:<10}", "ancestry"), theme.dim()),
+                Span::styled(
+                    ui::truncate(&chain, width.saturating_sub(12), theme.capability),
+                    theme.text(),
+                ),
+            ]));
+
+            let source = match &ancestry.inference.evidence {
+                Some(evidence) => format!(
+                    "{} (evidence: {}({}))",
+                    ancestry.inference.source.as_str(),
+                    evidence.name,
+                    evidence.pid
+                ),
+                None => ancestry.inference.source.as_str().to_string(),
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{:<10}", "source"), theme.dim()),
+                Span::styled(source, theme.text()),
+            ]));
+
+            let coverage = match ancestry.end {
+                AncestryEnd::Root => "complete: reached PPID 0".to_string(),
+                AncestryEnd::MissingParent { pid } => format!(
+                    "incomplete: parent PID {pid} not in snapshot (budget/churn/permissions)"
+                ),
+                AncestryEnd::MissingPpid => {
+                    "incomplete: ppid unavailable (collection disabled or partial)".to_string()
+                }
+                AncestryEnd::Cycle { pid } => {
+                    format!("incomplete: cycle detected at PID {pid}")
+                }
+                AncestryEnd::DepthLimit => "incomplete: ancestry depth limit reached".to_string(),
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{:<10}", "coverage"), theme.dim()),
+                Span::styled(
+                    ui::truncate(&coverage, width.saturating_sub(12), theme.capability),
+                    if ancestry.end.is_complete() {
+                        theme.dim()
+                    } else {
+                        theme.severity(pulse_core::Severity::Warn)
+                    },
+                ),
+            ]));
+        } else {
+            lines.push(Line::from(Span::styled(
+                "unavailable: process collection is disabled or target disappeared",
+                theme.severity(pulse_core::Severity::Warn),
+            )));
+        }
+    }
+
     // DETAILS: терминальный уровень расследования. Здесь цепочка обязана
     // закончиться ответом «кто это и что он держит», а не ещё одной таблицей.
     if let Some(details) = process_details(app, snapshot, entity) {
@@ -304,6 +377,18 @@ pub(crate) fn render(
                         theme.capability,
                     ),
                     theme.text(),
+                ),
+            ]));
+        }
+        if details.fd_truncated {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{:<10}", "listens"), theme.dim()),
+                Span::styled(
+                    format!(
+                        "incomplete: scanned {} descriptors; ports may be missing",
+                        details.fd_total
+                    ),
+                    theme.severity(pulse_core::Severity::Warn),
                 ),
             ]));
         }

@@ -11,6 +11,9 @@ Pulse — local-first observability node для Linux с диагностиче�
 - CPU, memory, PSI, disk, network, process и cgroup telemetry;
 - восемь семейств диагностических правил с гистерезисом и явными доказательствами;
 - semantic A/B diff структуры, метрик и событий без недоказанных причинных утверждений;
+- spawn ancestry по `ppid` и `pulse why <pid>`: источник запуска выводится
+  только как эвристика с ancestor-доказательством; обрыв цепочки из-за
+  бюджета/churn/прав помечается явно и не смешивается с ownership-графом;
 - четыре экрана Overview, Problems, Entities, Timeline плюс контекстный Inspector и overlay'и Help/Search/Palette;
 - семантический конвейер событий: рутинный churn ядра подавляется, повторы
   сворачиваются в группы, сырой поток остаётся доступен по `: raw events`;
@@ -148,6 +151,9 @@ cargo run -p pulse-cli -- serve
 
 # Однократный текстовый снимок
 cargo run -p pulse-cli -- top --limit 20
+
+# Почему PID существует: spawn ancestry отдельно от ownership
+cargo run -p pulse-cli -- why 1234
 
 # A/B diff: собрать короткое окно и сравнить секунду назад с текущим моментом
 cargo run -p pulse-cli -- diff --from 1s --to now

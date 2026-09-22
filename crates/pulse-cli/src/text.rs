@@ -3,13 +3,94 @@
 //! Текстовый режим сохраняет ту же иерархию, что TUI: проблемы раньше таблицы
 //! потребителей. Это важно для SSH, пайпов и терминалов без alternate screen.
 
+use std::io;
+
+use pulse_core::launch::{process_ancestry, AncestryEnd};
 use pulse_core::metric::ids;
 use pulse_core::snapshot::Snapshot;
 use pulse_core::time::format_duration;
+use pulse_core::{EntityKey, EntityKind};
 use pulse_tui::app::{App, SortKey};
 use pulse_tui::fold::relevant;
 use pulse_tui::format;
 use pulse_tui::rows::entity_rows;
+
+/// One-shot ответ «как этот PID оказался запущен».
+///
+/// Spawn ancestry и ownership выводятся раздельно: cgroup/unit не доказывают
+/// родительство процесса. Источник всегда назван эвристикой и сопровождается
+/// конкретным ancestor-процессом.
+pub fn render_why(snapshot: &Snapshot, pid: i32) -> io::Result<String> {
+    let target = snapshot
+        .entities_of_kind(EntityKind::Process)
+        .find(|entity| {
+            matches!(
+                entity.key,
+                EntityKey::Process {
+                    pid: candidate,
+                    ..
+                } if candidate == pid
+            )
+        })
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "PID {pid} не найден в текущем снимке: процесс завершился, не поместился в бюджет или collect_processes=false"
+                ),
+            )
+        })?;
+    let ancestry = process_ancestry(snapshot, target.id)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "для процесса нет ancestry"))?;
+
+    let mut out = String::with_capacity(1024);
+    out.push_str("PULSE WHY\n");
+    out.push_str(&format!("Target       : {} (pid {pid})\n", target.name));
+
+    let chain = ancestry
+        .chain
+        .iter()
+        .map(|hop| format!("{}({})", hop.name, hop.pid))
+        .collect::<Vec<_>>()
+        .join(" -> ");
+    out.push_str(&format!("Spawn chain  : {chain}\n"));
+
+    let coverage = match ancestry.end {
+        AncestryEnd::Root => "complete: reached PPID 0".to_string(),
+        AncestryEnd::MissingParent { pid } => {
+            format!("incomplete: parent PID {pid} not in snapshot (budget/churn/permissions)")
+        }
+        AncestryEnd::MissingPpid => {
+            "incomplete: ppid unavailable (collection disabled or partial)".to_string()
+        }
+        AncestryEnd::Cycle { pid } => format!("incomplete: cycle at PID {pid}"),
+        AncestryEnd::DepthLimit => "incomplete: depth limit reached".to_string(),
+    };
+    out.push_str(&format!("Coverage     : {coverage}\n"));
+    out.push_str(&format!(
+        "Source guess : {} (heuristic)\n",
+        ancestry.inference.source.as_str()
+    ));
+    if let Some(evidence) = ancestry.inference.evidence {
+        out.push_str(&format!(
+            "Evidence     : ancestor {} (pid {})\n",
+            evidence.name, evidence.pid
+        ));
+    } else {
+        out.push_str("Evidence     : no recognised ancestor in collected chain\n");
+    }
+
+    let ownership = snapshot
+        .ancestry(target.id)
+        .iter()
+        .filter_map(|id| snapshot.entity(*id))
+        .map(|entity| format!("{}/{}", entity.kind.as_str(), entity.name))
+        .collect::<Vec<_>>()
+        .join(" -> ");
+    out.push_str(&format!("Ownership    : {ownership}\n"));
+    out.push_str("Note         : ownership is containment, not spawn ancestry\n");
+    Ok(out)
+}
 
 /// Однократный человекочитаемый снимок.
 #[must_use]
@@ -252,6 +333,28 @@ mod tests {
         assert!(text.find("PROBLEMS") < text.find("ENTITIES"));
         assert!(text.contains("host-a"));
         assert!(text.contains("init"));
+    }
+
+    #[test]
+    fn why_separates_spawn_chain_from_ownership_and_names_incompleteness() {
+        let text = render_why(&snapshot(), 1).expect("why");
+        assert!(text.contains("Spawn chain  : init(1)"), "{text}");
+        assert!(
+            text.contains("Coverage     : incomplete: ppid unavailable"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Source guess : unknown (heuristic)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Ownership    : host/host-a -> process/init"),
+            "{text}"
+        );
+        assert!(
+            text.contains("ownership is containment, not spawn ancestry"),
+            "{text}"
+        );
     }
 
     #[test]

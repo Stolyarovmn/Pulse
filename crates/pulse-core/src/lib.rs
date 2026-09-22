@@ -41,6 +41,7 @@ pub mod details;
 pub mod entity;
 pub mod event;
 pub mod graph;
+pub mod launch;
 pub mod metric;
 pub mod problem;
 pub mod redact;
@@ -59,6 +60,9 @@ pub use entity::{
 };
 pub use event::{Event, EventKind};
 pub use graph::{CollectCtx, CollectError, Collector, EntityGraph, GraphStats, TickBatch};
+pub use launch::{
+    process_ancestry, AncestryEnd, LaunchInference, LaunchSource, ProcessAncestry, ProcessHop,
+};
 pub use metric::{ids, ExportPolicy, MetricDesc, MetricId, MetricKind, MetricScope, Unit};
 pub use problem::{Evidence, Hysteresis, Problem, ProblemId, RuleId, Severity};
 pub use redact::{parse_cmdline, redact_argv, sanitize_display, RedactMode};

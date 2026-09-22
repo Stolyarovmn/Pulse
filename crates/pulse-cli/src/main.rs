@@ -68,6 +68,11 @@ enum Command {
         #[arg(short = 'n', long, default_value_t = 20)]
         limit: usize,
     },
+    /// Объяснить ancestry и выявленный источник запуска процесса.
+    Why {
+        /// PID процесса в текущем снимке.
+        pid: i32,
+    },
     /// Семантическое сравнение двух моментов локальной истории.
     Diff {
         /// Момент A: `30s`, `5m` (столько назад), `now` или UNIX-ms.
@@ -127,6 +132,7 @@ fn try_main() -> Result<(), Box<dyn Error>> {
         Command::Run => run_tui(&config, demo),
         Command::Serve => serve(&config, demo),
         Command::Top { limit } => top(&config, limit, demo),
+        Command::Why { pid } => why(&config, pid, demo),
         Command::Diff { from, to } => run_diff(&config, &from, &to, demo),
         Command::Scorecard { seconds } => scorecard(&config, seconds, demo),
         Command::Config {
@@ -301,6 +307,20 @@ fn top(config: &PulseConfig, limit: usize, demo: bool) -> Result<(), Box<dyn Err
     let runtime = AgentRuntime::start_with_fs(config, source_fs(config, demo))?;
     let snapshot = runtime.wait_for_tick(2, tick_timeout(config))?;
     print!("{}", text::render_top(&snapshot, limit));
+    runtime.shutdown();
+    Ok(())
+}
+
+fn why(config: &PulseConfig, pid: i32, demo: bool) -> Result<(), Box<dyn Error>> {
+    if pid <= 0 {
+        return Err("PID обязан быть положительным".into());
+    }
+    let runtime = AgentRuntime::start_with_fs(config, source_fs(config, demo))?;
+    // В отличие от `top`, ancestry не использует rate-метрики: одного
+    // завершённого такта достаточно.
+    let snapshot = runtime.wait_for_tick(1, tick_timeout(config))?;
+    let rendered = text::render_why(&snapshot, pid)?;
+    print!("{rendered}");
     runtime.shutdown();
     Ok(())
 }
@@ -496,6 +516,7 @@ mod tests {
             vec!["pulse", "run"],
             vec!["pulse", "serve"],
             vec!["pulse", "top", "--limit", "5"],
+            vec!["pulse", "why", "123"],
             vec!["pulse", "diff", "--from", "30s", "--to", "now"],
             vec!["pulse", "scorecard", "--seconds", "1"],
             vec!["pulse", "config", "print"],

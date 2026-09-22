@@ -2088,6 +2088,14 @@ fn process_inspector_answers_user_exe_and_ports() {
     let text = joined(140, 40, &snapshot, &mut app);
 
     assert!(text.contains("PROCESS DETAILS"), "блок деталей: {text}");
+    assert!(
+        text.contains("WHY IT EXISTS (HEURISTIC)"),
+        "источник запуска обязан быть отдельным блоком и называться эвристикой: {text}"
+    );
+    assert!(
+        text.contains("incomplete: ppid unavailable"),
+        "обрыв цепочки обязан быть виден, а не скрыт: {text}"
+    );
     assert!(text.contains("www-data"), "пользователь: {text}");
     assert!(text.contains("/usr/sbin/nginx"), "исполняемый файл: {text}");
     assert!(text.contains("/var/www"), "рабочий каталог: {text}");
