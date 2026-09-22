@@ -237,6 +237,8 @@ impl Collector for ProcessCollector {
         let host = ctx.host();
         let interval = ctx.interval_secs().max(0.001);
         let mut seen: Vec<ProcKey> = Vec::new();
+        let mut threads_total = 0_f64;
+        let truncated = pids.len() >= budget;
 
         for pid_str in pids {
             // Фильтр и бюджет уже применены при обходе.
@@ -297,6 +299,7 @@ impl Collector for ProcessCollector {
             // Бюджет уже применён при обходе каталога, а счёт обработанных
             // процессов равен длине `seen`.
             seen.push(key);
+            threads_total += stat.num_threads as f64;
 
             let parent = cgroup.unwrap_or(host);
             let mut spec = EntitySpec::new(
@@ -408,6 +411,20 @@ impl Collector for ProcessCollector {
                 .and_then(|t| t.trim().parse::<f64>().ok())
             {
                 ctx.sample(entity, ids::PROC_OOM_SCORE, value);
+            }
+        }
+
+        // Счётчики хоста публикуются здесь, потому что `stat` каждого PID уже
+        // прочитан: отдельный обход в `HostCollector` был дублем (PULSE-088).
+        // Усечённый обход даёт заниженные числа, а заниженное число процессов
+        // хуже отсутствующего: по нему читают «нагрузка упала».
+        // Пустой список означает, что ни один процесс не пережил проверку
+        // идентичности: публиковать «ноль процессов» в этом случае значит
+        // сообщить о хосте то, чего не наблюдали.
+        if !truncated && !seen.is_empty() {
+            ctx.sample(host, ids::HOST_PROCS_TOTAL, seen.len() as f64);
+            if threads_total > 0.0 {
+                ctx.sample(host, ids::HOST_THREADS_TOTAL, threads_total);
             }
         }
 

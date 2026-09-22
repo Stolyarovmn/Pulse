@@ -104,10 +104,10 @@ pub fn build_collectors(cfg: &Config, fs: Arc<dyn FsSource>) -> Vec<Box<dyn Coll
     let ticks = clock_ticks_per_second();
     let mut collectors: Vec<Box<dyn Collector>> = Vec::with_capacity(6);
 
-    collectors.push(Box::new(HostCollector::new(
-        Arc::clone(&fs),
-        cfg.general.proc_root.clone(),
-    )));
+    collectors.push(Box::new(
+        HostCollector::new(Arc::clone(&fs), cfg.general.proc_root.clone())
+            .with_process_counts_elsewhere(cfg.general.collect_processes),
+    ));
     collectors.push(Box::new(DiskCollector::new(
         Arc::clone(&fs),
         cfg.general.proc_root.clone(),

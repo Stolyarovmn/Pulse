@@ -28,6 +28,14 @@ pub struct HostCollector {
     fs: Arc<dyn FsSource>,
     proc_root: PathBuf,
     previous_cpu: Option<parse::CpuTimes>,
+    /// Считает ли процессы и потоки кто-то другой.
+    ///
+    /// `ProcessCollector` уже читает `stat` каждого PID, и второй обход
+    /// `/proc` ради тех же чисел был чистым дублем: на узле с 899
+    /// процессами это лишние ~2700 системных вызовов на такт (PULSE-088).
+    /// Когда сбор процессов выключен, обход остаётся здесь: иначе метрики
+    /// просто исчезли бы.
+    counts_from_process_collector: bool,
 }
 
 impl HostCollector {
@@ -37,7 +45,15 @@ impl HostCollector {
             fs,
             proc_root,
             previous_cpu: None,
+            counts_from_process_collector: false,
         }
+    }
+
+    /// Передаёт подсчёт процессов и потоков `ProcessCollector`.
+    #[must_use]
+    pub fn with_process_counts_elsewhere(mut self, elsewhere: bool) -> Self {
+        self.counts_from_process_collector = elsewhere;
+        self
     }
 
     fn path(&self, rest: &str) -> PathBuf {
@@ -319,7 +335,9 @@ impl Collector for HostCollector {
         let memory = self.collect_memory(ctx);
         self.collect_pressure(ctx);
         self.collect_misc(ctx);
-        self.collect_process_counts(ctx);
+        if !self.counts_from_process_collector {
+            self.collect_process_counts(ctx);
+        }
 
         match (cpu, memory) {
             (true, true) => Ok(()),
@@ -554,6 +572,41 @@ mod tests {
         let threads =
             value(&batch, SeriesKey::new(host, ids::HOST_THREADS_TOTAL)).unwrap_or_default();
         assert!((threads - 6.0).abs() < 1e-12, "потоков {threads}");
+    }
+
+    /// PULSE-088: два обхода `/proc` ради одних и тех же чисел.
+    ///
+    /// `ProcessCollector` уже читает `stat` каждого PID. Пока `HostCollector`
+    /// делал это повторно, узел на 899 процессов платил ~2700 лишних
+    /// системных вызовов за такт. Когда сбор процессов выключен, обход
+    /// обязан остаться: иначе метрики исчезнут.
+    #[test]
+    fn process_counts_are_not_walked_twice() {
+        let counting = crate::test_support::CountingFs::new(Arc::new(fixture()));
+        let mut delegated = HostCollector::new(Arc::new(counting.clone()), PathBuf::from("/proc"))
+            .with_process_counts_elsewhere(true);
+        let (graph, batch) = run_ticks(&mut delegated, 1);
+        let host = graph.host();
+        assert!(
+            value(&batch, SeriesKey::new(host, ids::HOST_PROCS_TOTAL)).is_none(),
+            "счёт процессов принадлежит process-коллектору"
+        );
+        let reads_without_walk = counting.counts().read;
+
+        let counting = crate::test_support::CountingFs::new(Arc::new(fixture()));
+        let mut standalone = HostCollector::new(Arc::new(counting.clone()), PathBuf::from("/proc"));
+        let (graph, batch) = run_ticks(&mut standalone, 1);
+        let host = graph.host();
+        assert!(
+            value(&batch, SeriesKey::new(host, ids::HOST_PROCS_TOTAL)).is_some(),
+            "без process-коллектора обход обязан остаться"
+        );
+        assert!(
+            counting.counts().read > reads_without_walk,
+            "делегирование обязано убирать чтения, а не только метрики: {} против {}",
+            counting.counts().read,
+            reads_without_walk
+        );
     }
 
     #[test]
