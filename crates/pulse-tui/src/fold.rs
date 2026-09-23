@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 
 use pulse_core::entity::{Entity, EntityId, EntityKey, EntityKind};
+use pulse_core::metric::ids;
 use pulse_core::snapshot::Snapshot;
 
 use crate::rows::EntityRow;
@@ -313,7 +314,9 @@ pub fn fold(snapshot: &Snapshot, rows: &[EntityRow]) -> Vec<LogicalRow> {
         // работающий уровень — имя главного процесса внутри объекта. Docker/CRI
         // API не реализованы, поэтому выдумывать имя контейнера неоткуда.
         if is_opaque_id(&group.row.name) {
-            if let Some(name) = dominant_process_name(&group.members, &by_id) {
+            let name = dominant_process_name(&group.members, &by_id)
+                .or_else(|| child_process_name(snapshot, &group.members));
+            if let Some(name) = name {
                 group.technical_id = Some(group.row.name.clone());
                 group.row.name = name;
             }
@@ -382,6 +385,26 @@ fn dominant_process_name(
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
         .map(|row| row.name.clone())
+}
+
+/// Имя самого крупного процесса среди прямых детей членов объекта.
+///
+/// Запасной путь для свёртки части дерева: CHILDREN инспектора получает
+/// только прямых детей `system.slice`, процессов контейнера среди них нет, и
+/// на stage-1 блок состоял из `docker-<64 hex>.scope`. Процессы живут прямо
+/// под cgroup контейнера, поэтому одного уровня достаточно.
+fn child_process_name(snapshot: &Snapshot, members: &[EntityId]) -> Option<String> {
+    members
+        .iter()
+        .flat_map(|member| snapshot.children(*member))
+        .filter(|child| child.kind == EntityKind::Process && !child.name.is_empty())
+        .max_by(|a, b| {
+            let rss = |entity: &Entity| snapshot.value_or(entity.id, ids::PROC_RSS, 0.0);
+            rss(a)
+                .partial_cmp(&rss(b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|child| child.name.clone())
 }
 
 /// Взвешенный вклад одной причины в значимость строки.

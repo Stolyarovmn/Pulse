@@ -2197,6 +2197,44 @@ fn quit_works_from_the_pipe_overlay() {
     );
 }
 
+/// На stage-1 CHILDREN у `system.slice` состоял из `docker-<64 hex>.scope`:
+/// в свёртку детей не попадают процессы контейнера, и имя не выводилось.
+/// Узнаваемое имя берётся у процесса внутри контейнера, одноимённые
+/// различаются коротким ID.
+#[test]
+fn inspector_children_use_process_names_for_containers() {
+    let snapshot = production_like();
+    let system = snapshot
+        .entities
+        .iter()
+        .find(|entity| entity.name == "system.slice")
+        .map(|entity| entity.key.clone())
+        .expect("system.slice");
+    let mut app = App::default();
+    app.open_inspector(system);
+    let text = joined(180, 60, &snapshot, &mut app);
+    let children: Vec<&str> = text
+        .lines()
+        .skip_while(|line| !line.starts_with("CHILDREN"))
+        .skip(1)
+        .take_while(|line| !line.trim().is_empty())
+        .collect();
+    assert!(!children.is_empty(), "блок CHILDREN:\n{text}");
+    for line in &children {
+        // Строка: `  <kind>  <имя> [короткий ID]  <символ>`; хешем не может
+        // быть само имя, а суффикс-различитель допустим.
+        let name = line.split_whitespace().nth(1).unwrap_or_default();
+        assert!(
+            !crate::fold::is_opaque_id(name),
+            "хеш вместо имени: {line}\n{text}"
+        );
+    }
+    assert!(
+        children.iter().any(|line| line.contains("postgres")),
+        "{children:?}"
+    );
+}
+
 /// Цепочка и боковые переходы - разные списки, и Tab честно переключает их.
 #[test]
 fn chain_and_side_jumps_are_separate_lists() {
