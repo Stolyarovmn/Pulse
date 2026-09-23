@@ -174,7 +174,7 @@ pub fn render_top(snapshot: &Snapshot, limit: usize) -> String {
             format::truncate(&row.name, 24),
             logical.kind_label(),
             format::cores(row.cpu),
-            format::bytes(row.memory),
+            pulse_tui::rows::memory_text(row, "-"),
             // Текстовый снимок всегда ASCII: его перенаправляют в файл и
             // читают чем угодно, поэтому тире здесь недопустимо.
             if row.owner.is_empty() {

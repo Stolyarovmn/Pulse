@@ -199,21 +199,7 @@ pub(crate) fn render(
     if plan.shows(Priority::P2) {
         let child_rows: Vec<crate::rows::EntityRow> = snapshot
             .children(entity.id)
-            .map(|child| {
-                let severity = snapshot.problems_of(child.id).map(|p| p.severity).max();
-                crate::rows::EntityRow {
-                    id: child.id,
-                    kind: child.kind,
-                    name: child.name.clone(),
-                    cpu: crate::rows::cpu_of(snapshot, child),
-                    memory: crate::rows::memory_of(snapshot, child),
-                    owner: crate::rows::owner_of(snapshot, child),
-                    severity,
-                    state: crate::rows::state_of(snapshot, child, severity),
-                    io: crate::rows::io_of(snapshot, child),
-                    net: crate::rows::net_of(snapshot, child),
-                }
-            })
+            .map(|child| crate::rows::row_of(snapshot, child))
             .collect();
         let folded = crate::fold::fold(snapshot, &child_rows);
         if !folded.is_empty() {

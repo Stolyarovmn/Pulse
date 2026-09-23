@@ -230,8 +230,10 @@ pub fn entity_columns() -> Vec<Column> {
         Column::new("STATE", "S", 0, 1, 5, Align::Left, 0),
         Column::new("CPU", "CPU", 1, 4, 6, Align::Right, 0),
         Column::new("MEM", "MEM", 1, 6, 9, Align::Right, 0),
-        // Вид уходит раньше владельца: см. `Column::drop_first`.
-        Column::new("KIND", "KIND", 2, 8, 10, Align::Left, 1),
+        // Вид уходит раньше владельца: см. `Column::drop_first`. Желаемая
+        // ширина — под `container+12p`: обрезанный до `container…` вид
+        // теряет именно состав объекта, ради которого колонка существует.
+        Column::new("KIND", "KIND", 2, 8, 13, Align::Left, 1),
         Column::new("OWNER", "OWNER", 2, 8, 24, Align::Left, 0),
         Column::new("IO", "IO", 3, 5, 10, Align::Right, 1),
         Column::new("NET", "NET", 3, 5, 10, Align::Right, 0),

@@ -292,10 +292,16 @@ impl CgroupCollector {
         *processed += 1;
         let _ = seen.insert(inode);
 
-        let name = dir
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "root".to_string());
+        // У корня путь `/sys/fs/cgroup`, и последний сегмент давал имя
+        // `cgroup` — в таблице и в цепочке владения это читалось как
+        // «cgroup/cgroup» и не говорило, что речь о всём хосте.
+        let name = if rel_path.is_empty() {
+            "root".to_string()
+        } else {
+            dir.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "root".to_string())
+        };
         let display_path = if rel_path.is_empty() { "/" } else { rel_path };
 
         // `io.stat` читается до создания сущности: список дисков нужен как метка,
@@ -1627,5 +1633,25 @@ mod tests {
         collector.fs =
             Arc::new(tree(1_000, 0, 0).link("/sys/dev/block/8:0", "../../devices/pci/block/sda"));
         assert_eq!(collector.disk_resolver(), DiskResolver::GraphLabels);
+    }
+
+    /// Корень назывался последним сегментом `/sys/fs/cgroup`, то есть
+    /// `cgroup`, и в цепочке владения читался как «cgroup/cgroup». Имя
+    /// обязано говорить, что это корень всего хоста.
+    #[test]
+    fn root_cgroup_is_named_root_not_after_its_mount_point() {
+        let mut collector = CgroupCollector::new(
+            Arc::new(tree(1_000, 0, 0)),
+            PathBuf::from("/sys/fs/cgroup"),
+            PathBuf::from("/sys"),
+            100,
+        );
+        let mut graph = EntityGraph::new("boot", "host", Timestamp::from_millis(1_000));
+        let _ = run(&mut collector, &mut graph, 2_000);
+        let root = graph
+            .entities_of_kind(EntityKind::Cgroup)
+            .find(|entity| entity.labels.get("path") == Some("/"))
+            .expect("корневая cgroup");
+        assert_eq!(root.name, "root");
     }
 }

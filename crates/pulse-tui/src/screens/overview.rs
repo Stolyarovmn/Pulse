@@ -463,14 +463,14 @@ fn render_entities(
             format!(
                 "{marker}{name:<NAME$} {:>6} {:>8}  {}  {why}",
                 crate::format::cores(logical.row.cpu),
-                crate::format::bytes(logical.row.memory),
+                crate::rows::memory_text(&logical.row, super::no_owner(theme)),
                 logical.row.state.symbol(theme.capability),
             )
         } else {
             format!(
                 "{marker}{name:<NAME$} {:>6} {:>8}  {}",
                 crate::format::cores(logical.row.cpu),
-                crate::format::bytes(logical.row.memory),
+                crate::rows::memory_text(&logical.row, super::no_owner(theme)),
                 logical.row.state.symbol(theme.capability),
             )
         };
@@ -570,7 +570,10 @@ fn render_selected(
             ),
         ));
     }
-    lines.push(pair("MEM", crate::format::bytes(logical.row.memory)));
+    lines.push(pair(
+        "MEM",
+        crate::rows::memory_text(&logical.row, super::no_owner(theme)),
+    ));
     if let Some(io) = logical.row.io {
         lines.push(pair("IO", crate::format::rate(io)));
     }

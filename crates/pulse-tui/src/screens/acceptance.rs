@@ -545,6 +545,64 @@ fn entities_defaults_to_logical_with_explicit_state() {
     assert!(text.contains("PREVIEW /"));
 }
 
+/// Колонка, пустая во всех строках, — декорация, отнимающая ширину.
+///
+/// На живом узле `OWNER` и `NET` показывали «—» у каждой из 467 строк, а
+/// вид при этом обрезался до `container…`. Инвариант проверяется по кадру:
+/// у каждой показанной необязательной колонки хоть одна ячейка содержит
+/// значение.
+#[test]
+fn optional_columns_are_shown_only_when_they_carry_data() {
+    for snapshot in [healthy(), production_like()] {
+        let mut app = App::default();
+        app.screen = Screen::Entities;
+        let lines = draw(180, 40, &snapshot, &mut app);
+        let Some(header_row) = lines
+            .iter()
+            .position(|line| line.trim_start().starts_with("NAME"))
+        else {
+            panic!("заголовок таблицы: {lines:?}");
+        };
+        let header = lines.get(header_row).cloned().unwrap_or_default();
+        for title in ["OWNER", "IO", "NET"] {
+            let Some(start) = header.find(&format!(" {title}")).map(|at| at + 1) else {
+                continue;
+            };
+            let column = header[..start].chars().count();
+            let width = title.chars().count();
+            let has_value = lines.iter().skip(header_row + 1).any(|line| {
+                let cell: String = line.chars().skip(column).take(width).collect();
+                let cell = cell.trim();
+                !cell.is_empty() && cell != "—" && cell != "-"
+            });
+            assert!(
+                has_value,
+                "колонка {title} показана, но пуста во всех строках:\n{}",
+                lines.join("\n")
+            );
+        }
+    }
+}
+
+/// У корневой cgroup v2 нет `memory.current`, и её строка на stage-1
+/// показывала `0 B` рядом с 14 ГиБ занятой памяти узла. В фикстуре
+/// `system.slice` тоже без метрики памяти: строка обязана показать
+/// заглушку, а не ноль.
+#[test]
+fn unmeasured_memory_is_not_printed_as_zero() {
+    let snapshot = healthy();
+    let mut app = App::default();
+    app.screen = Screen::Entities;
+    let lines = draw(180, 40, &snapshot, &mut app);
+    let Some(row) = lines.iter().find(|line| line.contains("system.slice")) else {
+        panic!("строка system.slice: {lines:?}");
+    };
+    assert!(
+        !row.contains("0 B") && row.contains('—'),
+        "неизмеренная память выдана за ноль: {row}"
+    );
+}
+
 #[test]
 fn search_overlay_is_visible_and_owns_input() {
     let snapshot = healthy();

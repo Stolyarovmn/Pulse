@@ -21,6 +21,12 @@ pub struct EntityRow {
     pub name: String,
     pub cpu: f64,
     pub memory: f64,
+    /// Измерена ли память вообще.
+    ///
+    /// У корневой cgroup v2 нет `memory.current`, и строка показывала `0 B`
+    /// для узла с 14 ГиБ занятой памяти. Ноль и «не измеряется» — разные
+    /// факты, как у `io` и `net`.
+    pub memory_measured: bool,
     pub owner: String,
     pub severity: Option<Severity>,
     /// Класс состояния сущности: колонка STATE читается до подписей.
@@ -32,6 +38,30 @@ pub struct EntityRow {
     pub io: Option<f64>,
     /// Сетевой поток, если он измерен.
     pub net: Option<f64>,
+}
+
+/// Строка таблицы для одной сущности.
+///
+/// Единственное место сборки: таблица и дети инспектора раньше собирали
+/// строку каждый сам, и новое поле легко терялось в одном из мест.
+#[must_use]
+pub fn row_of(snapshot: &Snapshot, entity: &Entity) -> EntityRow {
+    let severity = snapshot.problems_of(entity.id).map(|p| p.severity).max();
+    EntityRow {
+        id: entity.id,
+        kind: entity.kind,
+        name: entity.name.clone(),
+        cpu: cpu_of(snapshot, entity),
+        memory: memory_of(snapshot, entity),
+        memory_measured: snapshot
+            .value(entity.id, memory_metric(entity.kind))
+            .is_some(),
+        owner: owner_of(snapshot, entity),
+        severity,
+        state: state_of(snapshot, entity, severity),
+        io: io_of(snapshot, entity),
+        net: net_of(snapshot, entity),
+    }
 }
 
 pub fn entity_rows(snapshot: &Snapshot, app: &App) -> Vec<EntityRow> {
@@ -53,21 +83,7 @@ pub fn entity_rows(snapshot: &Snapshot, app: &App) -> Vec<EntityRow> {
                     .get("cmdline")
                     .is_some_and(|c| c.to_lowercase().contains(&query))
         })
-        .map(|entity| {
-            let severity = snapshot.problems_of(entity.id).map(|p| p.severity).max();
-            EntityRow {
-                id: entity.id,
-                kind: entity.kind,
-                name: entity.name.clone(),
-                cpu: cpu_of(snapshot, entity),
-                memory: memory_of(snapshot, entity),
-                owner: owner_of(snapshot, entity),
-                severity,
-                state: state_of(snapshot, entity, severity),
-                io: io_of(snapshot, entity),
-                net: net_of(snapshot, entity),
-            }
-        })
+        .map(|entity| row_of(snapshot, entity))
         .collect();
 
     match app.entities.sort {
@@ -130,13 +146,27 @@ pub const fn cpu_metric(kind: EntityKind) -> pulse_core::metric::MetricId {
     }
 }
 
-/// Потребление памяти сущностью в байтах.
-pub fn memory_of(snapshot: &Snapshot, entity: &Entity) -> f64 {
-    let metric = match entity.kind {
+/// Метрика памяти для вида сущности.
+const fn memory_metric(kind: EntityKind) -> pulse_core::metric::MetricId {
+    match kind {
         EntityKind::Process => ids::PROC_RSS,
         _ => ids::CG_MEM_CURRENT,
-    };
-    snapshot.value_or(entity.id, metric, 0.0)
+    }
+}
+
+/// Потребление памяти сущностью в байтах.
+pub fn memory_of(snapshot: &Snapshot, entity: &Entity) -> f64 {
+    snapshot.value_or(entity.id, memory_metric(entity.kind), 0.0)
+}
+
+/// Память строки для показа: неизмеренная не выдаётся за ноль.
+#[must_use]
+pub fn memory_text(row: &EntityRow, placeholder: &str) -> String {
+    if row.memory_measured {
+        crate::format::bytes(row.memory)
+    } else {
+        placeholder.to_string()
+    }
 }
 
 /// Класс состояния сущности для колонки STATE.

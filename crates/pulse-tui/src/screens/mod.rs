@@ -515,7 +515,15 @@ pub(crate) fn render_logical_table(
     if area.height == 0 || area.width == 0 {
         return;
     }
-    let columns = table::entity_columns();
+    // Колонка, пустая во всех строках, — чистая декорация: на живом узле
+    // `OWNER` и `NET` показывали «—» у каждой из 467 строк и отнимали
+    // ширину, из-за которой вид обрезался до `container…`. Пустота
+    // проверяется по всем строкам, а не по видимым: иначе раскладка
+    // прыгала бы при прокрутке.
+    let columns: Vec<table::Column> = table::entity_columns()
+        .into_iter()
+        .filter(|column| column_has_data(column.title, rows))
+        .collect();
     let marker = u16::try_from(ui::SELECTED.len()).unwrap_or(2);
     let plan = table::plan(&columns, area.width.saturating_sub(marker));
 
@@ -593,7 +601,7 @@ pub(crate) fn render_logical_table(
                     }),
                     theme.dim(),
                 ),
-                "MEM" => (format::bytes(row.memory), theme.text()),
+                "MEM" => (crate::rows::memory_text(row, no_owner(theme)), theme.text()),
                 // Вид несёт состав объекта: `unit+12p` честнее, чем `unit`.
                 "KIND" => (logical.kind_label(), theme.dim()),
                 "OWNER" => (
@@ -642,6 +650,19 @@ pub(crate) fn render_logical_table(
     }
 
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// Есть ли у колонки хоть одно значение среди строк.
+///
+/// Обязательные колонки (имя, состояние, CPU, память, вид, тренд) не
+/// скрываются никогда: их пустота сама по себе сообщение.
+fn column_has_data(title: &str, rows: &[LogicalRow]) -> bool {
+    match title {
+        "OWNER" => rows.iter().any(|logical| !logical.row.owner.is_empty()),
+        "IO" => rows.iter().any(|logical| logical.row.io.is_some()),
+        "NET" => rows.iter().any(|logical| logical.row.net.is_some()),
+        _ => true,
+    }
 }
 
 /// Сколько времени PULSE наблюдает этот хост.

@@ -294,6 +294,12 @@ pub fn fold(snapshot: &Snapshot, rows: &[EntityRow]) -> Vec<LogicalRow> {
         } else {
             process_memory
         };
+        // Объект измерен, если измерена хоть одна его часть.
+        group.row.memory_measured = group
+            .members
+            .iter()
+            .filter_map(|member| by_id.get(member))
+            .any(|row| row.memory_measured);
 
         // §Logical view: экран сущностей не должен состоять из хешей. Приоритет
         // источников имени задан спецификацией; здесь доступен последний
