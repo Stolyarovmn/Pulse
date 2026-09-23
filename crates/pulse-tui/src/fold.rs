@@ -315,7 +315,41 @@ pub fn fold(snapshot: &Snapshot, rows: &[EntityRow]) -> Vec<LogicalRow> {
             }
         }
     }
+    disambiguate_derived_names(&mut result);
     result
+}
+
+/// Разводит одноимённые объекты, чьё имя выведено из процесса.
+///
+/// На stage-1 три десятка контейнеров с образом node показывались строками
+/// `node`, и различить их было нечем. Короткий ID — первые 12 символов, как в
+/// `docker ps`, — однозначен и переводится в имя контейнера одной командой.
+/// Уникальное имя не трогается: суффикс нужен только там, где без него строки
+/// неотличимы.
+fn disambiguate_derived_names(rows: &mut [LogicalRow]) {
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for row in rows.iter().filter(|row| row.technical_id.is_some()) {
+        *seen.entry(row.row.name.clone()).or_default() += 1;
+    }
+    for row in rows.iter_mut() {
+        let Some(id) = row.technical_id.as_deref() else {
+            continue;
+        };
+        if seen.get(&row.row.name).copied().unwrap_or(0) < 2 {
+            continue;
+        }
+        let short: String = opaque_core(id).chars().take(12).collect();
+        row.row.name = format!("{} {short}", row.row.name);
+    }
+}
+
+/// Шестнадцатеричная часть технического имени без префикса рантайма.
+fn opaque_core(name: &str) -> &str {
+    name.trim_start_matches("docker-")
+        .trim_start_matches("crio-")
+        .trim_start_matches("cri-containerd-")
+        .trim_start_matches("libpod-")
+        .trim_end_matches(".scope")
 }
 
 /// Имя выглядит как непрозрачный технический идентификатор.
@@ -325,12 +359,7 @@ pub fn fold(snapshot: &Snapshot, rows: &[EntityRow]) -> Vec<LogicalRow> {
 /// попадает, потому что содержит буквы вне `[0-9a-f]`, точку или дефис.
 #[must_use]
 pub fn is_opaque_id(name: &str) -> bool {
-    let core = name
-        .trim_start_matches("docker-")
-        .trim_start_matches("crio-")
-        .trim_start_matches("cri-containerd-")
-        .trim_start_matches("libpod-")
-        .trim_end_matches(".scope");
+    let core = opaque_core(name);
     core.len() >= 8 && core.chars().all(|c| c.is_ascii_hexdigit())
 }
 

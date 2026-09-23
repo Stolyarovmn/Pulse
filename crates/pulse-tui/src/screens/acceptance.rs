@@ -246,11 +246,14 @@ fn production_like() -> Snapshot {
     }
 
     // Контейнеры названы хешами: узнаваемое имя приходит от главного процесса.
-    const CONTAINERS: [(&str, &str, f64); 4] = [
+    // Два node-контейнера повторяют stage-1: главный процесс у них одинаковый.
+    const CONTAINERS: [(&str, &str, f64); 6] = [
         ("4368590e0411", "postgres", 2.1),
         ("a59afa2bbe21", "java", 1.7),
         ("1863014a5505", "redis-server", 1.5),
         ("08adcc62f976", "nginx", 1.2),
+        ("d922a158cf26aa11", "node", 0.07),
+        ("fc13d159151abb22", "node", 0.06),
     ];
     for (index, (id, process, gib)) in CONTAINERS.iter().enumerate() {
         let cgroup_id = 100 + index as u64;
@@ -1176,6 +1179,15 @@ fn logical_view_prefers_human_names_and_keeps_ids() {
         !crate::fold::is_opaque_id("docker.service"),
         "имя сервиса не является хешем"
     );
+
+    // Одноимённые выведенные имена различимы коротким ID из `docker ps`;
+    // уникальное имя остаётся без суффикса.
+    let names: Vec<&str> = rows.iter().map(|row| row.row.name.as_str()).collect();
+    assert!(
+        names.contains(&"node d922a158cf26") && names.contains(&"node fc13d159151a"),
+        "одноимённые контейнеры неразличимы: {names:?}"
+    );
+    assert!(!names.contains(&"node"), "{names:?}");
 }
 
 #[test]
