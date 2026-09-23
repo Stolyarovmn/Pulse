@@ -189,8 +189,10 @@ impl CgroupCollector {
         }
     }
 
+    /// Файлы интерфейса cgroup, которые читает коллектор, выдаются одним
+    /// `seq_show`, поэтому годится [`FsSourceExt::read_single_opt`].
     fn read(&self, dir: &Path, file: &str) -> Option<String> {
-        self.fs.read_opt(&dir.join(file))
+        self.fs.read_single_opt(&dir.join(file))
     }
 
     /// Фиксирует способ резолва дисков на первом такте.

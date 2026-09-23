@@ -52,6 +52,23 @@ pub trait FsSource: Send + Sync + std::fmt::Debug {
     /// Читает не более `cap` байт файла.
     fn read(&self, path: &Path, cap: usize) -> io::Result<Vec<u8>>;
 
+    /// Читает файл, который ядро выдаёт одной записью, без лишнего `read`.
+    ///
+    /// `read` всегда заканчивается ещё одним вызовом, возвращающим 0. Для
+    /// файлов с одной записью — `/proc/<pid>/*` (`single_open`) и файлов
+    /// интерфейса cgroup (`seq_show`) — короткое чтение уже означает конец,
+    /// и этот вызов лишний: на stage-1 это несколько тысяч syscall за такт
+    /// (PULSE-088).
+    ///
+    /// **Не для многозаписных файлов** (`/proc/net/tcp`, `/proc/diskstats`,
+    /// `cgroup.procs`): seq_file может вернуть короткое чтение, если
+    /// следующая запись не поместилась в остаток буфера, и файл обрежется.
+    ///
+    /// Реализация по умолчанию — обычное [`FsSource::read`].
+    fn read_single(&self, path: &Path, cap: usize) -> io::Result<Vec<u8>> {
+        self.read(path, cap)
+    }
+
     /// Обходит каталог, отдавая имена по одному (без `.` и `..`).
     ///
     /// Потоковый, а не `Vec`, именно из-за бюджетов: обход `/proc` на хосте с
@@ -108,6 +125,12 @@ pub trait FsSourceExt: FsSource {
         self.read_string(path).ok()
     }
 
+    /// [`FsSource::read_single`] как строка; `None` при любой ошибке.
+    fn read_single_opt(&self, path: &Path) -> Option<String> {
+        let bytes = self.read_single(path, DEFAULT_CAP).ok()?;
+        Some(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
     /// Имена элементов каталога, не более `cap`.
     ///
     /// Возвращает признак усечения: «мы увидели ровно столько, сколько
@@ -140,6 +163,10 @@ pub trait FsSourceExt: FsSource {
 
 impl<T: FsSource + ?Sized> FsSourceExt for T {}
 
+/// Размер одного чтения в [`FsSource::read_single`]: страница, как отдаёт
+/// seq_file.
+const CHUNK: usize = 4096;
+
 /// Реальная файловая система.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RealFs;
@@ -152,6 +179,25 @@ impl FsSource for RealFs {
         // (например `/proc/kcore`) фактически бесконечны.
         let _ = file.take(cap as u64).read_to_end(&mut buf)?;
         Ok(buf)
+    }
+
+    fn read_single(&self, path: &Path, cap: usize) -> io::Result<Vec<u8>> {
+        let mut limited = File::open(path)?.take(cap as u64);
+        let mut buf = Vec::with_capacity(CHUNK.min(cap));
+        let mut chunk = [0_u8; CHUNK];
+        loop {
+            let read = match limited.read(&mut chunk) {
+                Ok(read) => read,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            };
+            buf.extend_from_slice(chunk.get(..read).unwrap_or_default());
+            // Однозаписный seq_file заполняет буфер целиком, пока данные
+            // есть: короткое чтение — конец. Полный буфер читается дальше.
+            if read < CHUNK {
+                return Ok(buf);
+            }
+        }
     }
 
     fn scan_dir(&self, path: &Path, visit: &mut dyn FnMut(&OsStr) -> bool) -> io::Result<()> {
@@ -421,6 +467,21 @@ mod tests {
         let fs = FixtureFs::new();
         assert!(fs.read(Path::new("/proc/nope"), 128).is_err());
         assert!(fs.read_opt(Path::new("/proc/nope")).is_none());
+    }
+
+    /// `read_single` останавливается на коротком чтении, но полный буфер —
+    /// не конец: файл длиннее страницы обязан прочитаться целиком, а `cap`
+    /// по-прежнему ограничивает объём.
+    #[test]
+    fn real_single_read_continues_past_full_chunk_and_obeys_cap() {
+        let path = std::env::temp_dir().join(format!("pulse-single-{}", std::process::id()));
+        let content: Vec<u8> = (0..10_000_u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&path, &content).expect("записать файл");
+        let whole = RealFs.read_single(&path, DEFAULT_CAP);
+        let capped = RealFs.read_single(&path, 5_000);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(whole.expect("чтение"), content);
+        assert_eq!(capped.expect("чтение").len(), 5_000);
     }
 
     #[test]

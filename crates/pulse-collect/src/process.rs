@@ -130,8 +130,11 @@ impl ProcessCollector {
         self.redactions
     }
 
+    /// Файлы `/proc/<pid>/*`, которые читает коллектор, выдаются ядром одной
+    /// записью (`single_open`), поэтому годится [`FsSourceExt::read_single_opt`].
     fn read(&self, pid: &str, file: &str) -> Option<String> {
-        self.fs.read_opt(&self.proc_root.join(pid).join(file))
+        self.fs
+            .read_single_opt(&self.proc_root.join(pid).join(file))
     }
 
     fn read_stat(&self, pid: &str) -> Option<ProcStat> {
@@ -202,6 +205,37 @@ impl ProcessCollector {
     fn fd_limit_for(&self, pid: &str) -> Option<f64> {
         let text = self.read(pid, "limits")?;
         parse::parse_limit_row(&text, "Max open files")
+    }
+
+    /// Разделяемая резидентная память процесса в байтах.
+    ///
+    /// `statm` отдаёт её третьим полем как `MM_FILEPAGES + MM_SHMEMPAGES`,
+    /// а `status` с ядра 4.5 — те же счётчики как `RssFile` и `RssShmem`.
+    /// `status` уже прочитан ради `VmRSS` и переключений контекста, поэтому
+    /// отдельное чтение `statm` на каждый процесс каждый такт было лишним
+    /// (PULSE-088). Значение то же самое.
+    ///
+    /// Без `mm` (поток ядра, зомби) в `status` нет ни `VmSize`, ни `Rss*`, а
+    /// `statm` печатает нули — ответ `0`, как и раньше. На старом ядре без
+    /// `RssFile` и при нечитаемом `status` остаётся прежний путь через `statm`.
+    fn shared_bytes(&self, pid: &str, status: Option<&str>) -> Option<f64> {
+        if let Some(text) = status {
+            if let (Some(file), Some(shmem)) = (
+                parse::field(text, "RssFile"),
+                parse::field(text, "RssShmem"),
+            ) {
+                return Some(file + shmem);
+            }
+            if parse::field(text, "VmSize").is_none() {
+                return Some(0.0);
+            }
+        }
+        self.read(pid, "statm")?
+            .split_whitespace()
+            .nth(2)?
+            .parse::<f64>()
+            .ok()
+            .map(|pages| pages * self.page_size)
     }
 
     /// Число процессов всего хоста, когда детальный бюджет переполнен.
@@ -297,7 +331,9 @@ impl Collector for ProcessCollector {
             let cached = self.previous.get(&key).cloned();
 
             let status = self.read(&pid_str, "status");
-            let statm = self.read(&pid_str, "statm");
+            // До проверки гонки, как и прежнее чтение `statm`: запасной путь
+            // обязан попадать под ту же проверку идентичности.
+            let shared = self.shared_bytes(&pid_str, status.as_deref());
             let io = self.read(&pid_str, "io");
             let oom_score = self.read(&pid_str, "oom_score");
             // Счёт без материализации: список дескрипторов сервера с тысячами
@@ -398,14 +434,8 @@ impl Collector for ProcessCollector {
                 .unwrap_or(stat.rss_pages as f64 * page_size);
             ctx.sample(entity, ids::PROC_RSS, rss);
             ctx.sample(entity, ids::PROC_VMS, stat.vsize_bytes as f64);
-            if let Some(text) = statm.as_deref() {
-                if let Some(shared) = text
-                    .split_whitespace()
-                    .nth(2)
-                    .and_then(|v| v.parse::<f64>().ok())
-                {
-                    ctx.sample(entity, ids::PROC_SHARED, shared * page_size);
-                }
+            if let Some(shared) = shared {
+                ctx.sample(entity, ids::PROC_SHARED, shared);
             }
 
             ctx.sample(entity, ids::PROC_MINOR_FAULTS, stat.minor_faults as f64);
@@ -607,6 +637,48 @@ mod tests {
             .next()
             .map(|e| e.id)
             .unwrap_or(EntityId::NONE)
+    }
+
+    /// PULSE-088: `PROC_SHARED` берётся из уже прочитанного `status`
+    /// (`RssFile + RssShmem`) — те же счётчики, что третье поле `statm`.
+    /// Контракт метрики прежний на всех трёх путях: обычный процесс, поток
+    /// ядра без `mm` (ноль, как печатает `statm`) и старое ядро без `RssFile`.
+    #[test]
+    fn shared_memory_comes_from_status_without_reading_statm() {
+        const PAGE: u64 = 4_096;
+        // statm: 1000 страниц разделяемой памяти = 4 000 KiB = RssFile + RssShmem.
+        let statm = "30000 5000 1000 100 0 2000 0\n";
+        let modern = "Name:\tnginx\nVmSize:\t 120000 kB\nVmRSS:\t 20000 kB\nRssAnon:\t 16000 kB\nRssFile:\t 3000 kB\nRssShmem:\t 1000 kB\n";
+        let kernel_thread = "Name:\tkworker/0:1\nThreads:\t1\n";
+        let old_kernel = "Name:\tnginx\nVmSize:\t 120000 kB\nVmRSS:\t 20000 kB\n";
+        let cases = [
+            ("современное ядро", modern, Some(4_000.0 * 1024.0), 0),
+            ("поток ядра", kernel_thread, Some(0.0), 0),
+            ("старое ядро", old_kernel, Some(1_000.0 * PAGE as f64), 1),
+        ];
+        for (name, status, expected, statm_reads) in cases {
+            let fs = FixtureFs::new()
+                .inode("/sys/fs/cgroup", 1)
+                .file("/proc/100/stat", &stat_line(100, "nginx", 10, 5_000))
+                .file("/proc/100/status", status)
+                .file("/proc/100/statm", statm);
+            let counting = crate::test_support::CountingFs::new(Arc::new(fs));
+            let mut collector = collector(Arc::new(counting.clone())).with_page_size(PAGE);
+            let mut graph = EntityGraph::new("boot", "host", Timestamp::from_millis(1_000));
+            let batch = run(&mut collector, &mut graph, 2_000);
+            let entity = process_id(&graph);
+            assert_eq!(
+                value(&batch, SeriesKey::new(entity, ids::PROC_SHARED)),
+                expected,
+                "{name}"
+            );
+            let read = counting
+                .calls()
+                .iter()
+                .filter(|call| call.path.ends_with("/statm"))
+                .count();
+            assert_eq!(read, statm_reads, "{name}: чтений statm");
+        }
     }
 
     #[test]
