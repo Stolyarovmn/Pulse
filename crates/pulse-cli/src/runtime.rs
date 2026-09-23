@@ -12,7 +12,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
-use pulse_collect::{boot_id, build_collectors, hostname, FsSource};
+use pulse_collect::{boot_id, build_collectors, hostname, observer_pid, FsSource};
 use pulse_core::metric::ids;
 use pulse_core::snapshot::{AgentStats, Snapshot, SnapshotSource};
 use pulse_core::time::Timestamp;
@@ -177,6 +177,9 @@ fn collect_loop(
     stop: Arc<AtomicBool>,
 ) {
     let interval = Duration::from_millis(config.general.interval_ms);
+    // До передачи `fs` коллекторам: PID наблюдателя не меняется за жизнь
+    // процесса, читать ссылку каждый такт незачем.
+    let observer = observer_pid(fs.as_ref(), &config.general.proc_root);
     let mut collectors = build_collectors(&config, fs);
     let mut analyzer = Analyzer::new(config.rules.clone());
     let mut ticks_total = 0_u64;
@@ -298,6 +301,7 @@ fn collect_loop(
             cpu_seconds: latest
                 .get(graph.host(), ids::AGENT_CPU_SECONDS)
                 .unwrap_or_default(),
+            observer_pid: observer,
             ..AgentStats::default()
         };
         let mut snapshot =

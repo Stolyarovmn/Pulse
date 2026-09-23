@@ -32,6 +32,8 @@ pub enum RelevanceReason {
     Io,
     Network,
     System,
+    /// Объект, в котором работает сам PULSE.
+    Observer,
     Pinned,
     Selected,
 }
@@ -49,6 +51,7 @@ impl RelevanceReason {
             Self::Io => "io",
             Self::Network => "network",
             Self::System => "system",
+            Self::Observer => "observer",
             Self::Pinned => "pinned",
             Self::Selected => "selected",
         }
@@ -434,10 +437,43 @@ pub fn scored_reasons(snapshot: &Snapshot, row: &LogicalRow) -> Vec<(RelevanceRe
         out.push((RelevanceReason::System, 1_500));
     }
 
+    // Объект самого наблюдателя: его «появление» вызвано запуском PULSE, а не
+    // событием на хосте. На stage-1 scope сессии агента вставал первым в
+    // RELEVANT только из-за «changed». Потребление агента остаётся в весе —
+    // это честная стоимость наблюдения, — но причиной названо, чей это объект.
+    // Настоящая проблема или ненормальное состояние по-прежнему побеждают.
+    if is_observer(snapshot, row) {
+        out.retain(|(reason, _)| *reason != RelevanceReason::Changed);
+        let alarming = out.iter().any(|(reason, _)| {
+            matches!(
+                reason,
+                RelevanceReason::Problem | RelevanceReason::Critical | RelevanceReason::Warning
+            )
+        });
+        if !alarming {
+            let total = out
+                .iter()
+                .fold(0_u64, |acc, (_, weight)| acc.saturating_add(*weight));
+            return vec![(RelevanceReason::Observer, total.max(1))];
+        }
+    }
+
     // Порядок по вкладу: первая причина — та, которая действительно вывела
     // объект в список, и именно она показывается в колонке `WHY`.
     out.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     out
+}
+
+/// Содержит ли логический объект процесс самого агента.
+fn is_observer(snapshot: &Snapshot, row: &LogicalRow) -> bool {
+    let Some(observer) = snapshot.agent.observer_pid else {
+        return false;
+    };
+    row.members.iter().any(|id| {
+        snapshot.entity(*id).is_some_and(|entity| {
+            matches!(entity.key, pulse_core::entity::EntityKey::Process { pid, .. } if pid == observer)
+        })
+    })
 }
 
 /// Объяснимые причины присутствия в Overview, сильнейшая первой (§165).
@@ -596,6 +632,102 @@ mod tests {
         // Строк с именем `angie` в логическом виде быть не должно.
         let bare = folded.iter().filter(|row| row.row.name == "angie").count();
         assert_eq!(bare, 0, "отдельные процессы сервиса не показываются");
+    }
+
+    /// Кадр stage-1: scope, в котором запустили PULSE, появился через такт
+    /// после baseline и встал первым в RELEVANT с причиной «changed», обогнав
+    /// `system.slice` с 2.6 ядра. Появление наблюдателя — не событие хоста.
+    #[test]
+    fn observer_session_is_named_and_not_promoted_by_its_own_start() {
+        let mut graph = EntityGraph::new("boot", "stage-1", Timestamp::from_millis(1_000));
+        graph.begin_tick(Timestamp::from_millis(2_000));
+        let host = graph.host();
+        let busy = graph.upsert(
+            EntitySpec::new(EntityKey::Cgroup { cgroup_id: 10 }, "system.slice").parent(host),
+        );
+        let _ = graph.end_tick();
+
+        graph.begin_tick(Timestamp::from_millis(3_000));
+        let _ = graph.upsert(
+            EntitySpec::new(EntityKey::Cgroup { cgroup_id: 10 }, "system.slice").parent(host),
+        );
+        let scope = graph.upsert(
+            EntitySpec::new(EntityKey::Cgroup { cgroup_id: 20 }, "tmux-spawn-1.scope").parent(host),
+        );
+        // Как на живом узле: сегмент `.scope` — это systemd-unit, который
+        // владеет своей cgroup, и процесс агента сворачивается в него.
+        let unit = graph.upsert(
+            EntitySpec::new(
+                EntityKey::Unit {
+                    name: "tmux-spawn-1.scope".into(),
+                },
+                "tmux-spawn-1.scope",
+            )
+            .parent(scope),
+        );
+        graph.relate(scope, RelationKind::OwnedBy, unit);
+        let agent = graph.upsert(
+            EntitySpec::new(
+                EntityKey::Process {
+                    pid: 4242,
+                    start_ticks: 9,
+                },
+                "pulse-omp-test",
+            )
+            .parent(scope),
+        );
+        let batch = graph.end_tick();
+
+        let mut latest = LatestValues::new();
+        latest.set(SeriesKey::new(busy, ids::CG_CPU_CORES), 2.63);
+        latest.set(SeriesKey::new(scope, ids::CG_CPU_CORES), 0.38);
+        latest.set(SeriesKey::new(agent, ids::PROC_CPU_CORES), 0.38);
+        let build = |observer_pid| {
+            Snapshot::build(
+                &graph,
+                latest.clone(),
+                vec![],
+                batch.events.clone(),
+                AgentStats {
+                    observer_pid,
+                    ..AgentStats::default()
+                },
+                "stage-1",
+                "boot",
+            )
+        };
+        let first = |snapshot: &Snapshot| {
+            let rows = entity_rows(snapshot, &App::default());
+            relevant(snapshot, &rows, 10)
+                .into_iter()
+                .map(|row| (row.row.name, row.reasons.first().copied()))
+                .collect::<Vec<_>>()
+        };
+
+        // Без знания о наблюдателе дефект воспроизводится: фикстура честная.
+        let unknown = first(&build(None));
+        assert_eq!(
+            unknown.first(),
+            Some(&(
+                "tmux-spawn-1.scope".to_string(),
+                Some(RelevanceReason::Changed)
+            )),
+            "{unknown:?}"
+        );
+
+        let known = first(&build(Some(4242)));
+        assert_eq!(
+            known.first().map(|(name, _)| name.as_str()),
+            Some("system.slice"),
+            "{known:?}"
+        );
+        assert!(
+            known.contains(&(
+                "tmux-spawn-1.scope".to_string(),
+                Some(RelevanceReason::Observer)
+            )),
+            "объект наблюдателя назван, а не спрятан: {known:?}"
+        );
     }
 
     /// Раздел 148: unit и cgroup одного объекта - одна строка.

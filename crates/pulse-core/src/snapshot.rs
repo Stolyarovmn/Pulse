@@ -194,6 +194,13 @@ pub struct AgentStats {
     pub export_rejected: u64,
     pub export_series: usize,
     pub export_dropped: u64,
+    /// PID самого агента в том пространстве имён, откуда читается `/proc`.
+    ///
+    /// Интерфейс обязан отличать наблюдателя от наблюдаемого: на stage-1
+    /// scope, в котором запустили PULSE, вставал первым в RELEVANT с причиной
+    /// «changed» — он появился потому, что появился сам наблюдатель.
+    /// `None`, если PID неизвестен или агент смотрит на чужой `/proc`.
+    pub observer_pid: Option<i32>,
 }
 
 /// Неизменяемый снимок.

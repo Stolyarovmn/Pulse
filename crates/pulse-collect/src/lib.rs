@@ -73,6 +73,21 @@ pub fn hostname(fs: &dyn FsSource, proc_root: &Path) -> String {
         .unwrap_or_else(|| "localhost".to_string())
 }
 
+/// PID самого агента так, как его видит источник `/proc`.
+///
+/// Берётся из ссылки `<proc_root>/self`, а не из `getpid()`: procfs отдаёт
+/// PID в своём пространстве имён, поэтому значение совпадёт с ключами
+/// процессов, которые читают коллекторы. Демо-источник ссылки не имеет —
+/// там наблюдателя в кадре нет, и ответ `None` честен.
+#[must_use]
+pub fn observer_pid(fs: &dyn FsSource, proc_root: &Path) -> Option<i32> {
+    fs.read_link(&proc_root.join("self"))
+        .ok()?
+        .to_str()?
+        .parse()
+        .ok()
+}
+
 /// Число тактов планировщика в секунде (`_SC_CLK_TCK`).
 ///
 /// Значение нужно для перевода `utime`/`stime` в секунды. Хардкодить 100 нельзя:

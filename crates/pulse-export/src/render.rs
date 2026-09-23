@@ -610,6 +610,8 @@ mod tests {
             export_rejected: 1,
             export_series: 25,
             export_dropped: 2,
+            // Идентичность, а не метрика: в `/metrics` не выводится.
+            observer_pid: None,
         };
         snap.graph.live_entities = 12;
         snap.problems.push(Problem {
