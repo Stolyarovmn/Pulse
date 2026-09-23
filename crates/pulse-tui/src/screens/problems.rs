@@ -36,13 +36,14 @@ pub(crate) fn render(
     app: &mut App,
     plan: &LayoutPlan,
     theme: &Theme,
+    history: Option<&crate::series::SeriesReader<'_>>,
 ) {
     app.problems.list_len = snapshot.problems.len();
     if snapshot.problems.is_empty() {
         render_empty(frame, area, snapshot, plan, theme);
         return;
     }
-    render_active(frame, area, snapshot, app, plan, theme);
+    render_active(frame, area, snapshot, app, plan, theme, history);
 }
 
 /// Пустое состояние (разделы 126, 151, 159).
@@ -147,6 +148,7 @@ fn render_active(
     app: &App,
     plan: &LayoutPlan,
     theme: &Theme,
+    history: Option<&crate::series::SeriesReader<'_>>,
 ) {
     let mut problems: Vec<&Problem> = snapshot.problems.iter().collect();
     problems.sort_by(|a, b| b.severity.cmp(&a.severity).then(a.title.cmp(&b.title)));
@@ -163,7 +165,8 @@ fn render_active(
 
     render_list(frame, rect(&chunks, 0), &problems, selected, plan, theme);
     if let Some(problem) = problems.get(selected) {
-        render_detail(frame, rect(&chunks, 1), snapshot, problem, plan, theme);
+        let source = crate::screens::overview::TrendSource { snapshot, history };
+        render_detail(frame, rect(&chunks, 1), &source, problem, plan, theme);
     }
 }
 
@@ -221,11 +224,12 @@ fn render_list(
 fn render_detail(
     frame: &mut Frame<'_>,
     area: Rect,
-    snapshot: &Snapshot,
+    source: &crate::screens::overview::TrendSource<'_>,
     problem: &Problem,
     plan: &LayoutPlan,
     theme: &Theme,
 ) {
+    let snapshot = source.snapshot;
     let title = if plan.width_class >= WidthClass::Medium {
         format!("SELECTED / {}", problem.title.to_uppercase())
     } else {
@@ -251,6 +255,9 @@ fn render_detail(
                 spans.push(Span::styled(threshold.clone(), theme.dim()));
             }
             lines.push(Line::from(spans));
+            if let Some(trend) = evidence_trend(source, evidence, area.width, theme) {
+                lines.push(trend);
+            }
         }
     }
 
@@ -309,4 +316,41 @@ fn render_detail(
     }
 
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// Форма доказательства за окно тренда.
+///
+/// Кадр stage-1 показывал «swap занят 93%» и «держится 8 s»: из этого нельзя
+/// понять, растёт величина или стоит неделю, а от этого зависит срочность.
+/// Строка появляется только у доказательства со ссылкой на серию и только
+/// при подключённой истории; пик и среднее печатаются в единицах самой
+/// метрики, потому что форма нормирована по пику окна.
+fn evidence_trend(
+    source: &crate::screens::overview::TrendSource<'_>,
+    evidence: &pulse_core::problem::Evidence,
+    width: u16,
+    theme: &Theme,
+) -> Option<Line<'static>> {
+    let key = evidence.series?;
+    let lane_width = usize::from(width).saturating_sub(40).clamp(8, 30);
+    let trend = crate::trend::of_series(source.history, source.snapshot, key, lane_width, theme)?;
+    let window = format_duration(std::time::Duration::from_millis(crate::trend::WINDOW_MS));
+    if !trend.is_measured() {
+        return Some(Line::from(Span::styled(
+            format!("  {window}  collecting history"),
+            theme.dim(),
+        )));
+    }
+    Some(Line::from(vec![
+        Span::styled(format!("  {window}  "), theme.dim()),
+        Span::styled(trend.lane, theme.text()),
+        Span::styled(
+            format!(
+                "  peak {}  avg {}",
+                crate::format::metric_value(key.metric, trend.peak),
+                crate::format::metric_value(key.metric, trend.mean)
+            ),
+            theme.dim(),
+        ),
+    ]))
 }

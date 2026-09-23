@@ -142,12 +142,13 @@ pub struct ThresholdRule {
 }
 
 impl ThresholdRule {
-    fn candidates(&self, ctx: &RuleCtx<'_>) -> Vec<(EntityId, f64)> {
+    /// Кандидаты вместе с метрикой, по которой взято значение.
+    fn candidates(&self, ctx: &RuleCtx<'_>) -> Vec<(EntityId, MetricId, f64)> {
         let mut found = Vec::new();
 
         if let Some(metric) = self.host_metric {
             if let Some(value) = ctx.value(ctx.graph.host(), metric) {
-                found.push((ctx.graph.host(), value));
+                found.push((ctx.graph.host(), metric, value));
             }
         }
 
@@ -174,7 +175,7 @@ impl ThresholdRule {
                         continue;
                     }
                     if let Some(value) = ctx.value(entity.id, metric) {
-                        found.push((entity.id, value));
+                        found.push((entity.id, metric, value));
                     }
                 }
             }
@@ -183,7 +184,7 @@ impl ThresholdRule {
         if let Some(metric) = self.process_metric {
             for entity in ctx.graph.entities_of_kind(EntityKind::Process) {
                 if let Some(value) = ctx.value(entity.id, metric) {
-                    found.push((entity.id, value));
+                    found.push((entity.id, metric, value));
                 }
             }
         }
@@ -191,7 +192,7 @@ impl ThresholdRule {
         if let Some(metric) = self.device_metric {
             for entity in ctx.graph.entities_of_kind(EntityKind::Disk) {
                 if let Some(value) = ctx.value(entity.id, metric) {
-                    found.push((entity.id, value));
+                    found.push((entity.id, metric, value));
                 }
             }
         }
@@ -224,7 +225,7 @@ impl Rule for ThresholdRule {
         let (warn, crit, clear) = (self.thresholds)(ctx.cfg);
         let mut hits = Vec::new();
 
-        for (entity, value) in self.candidates(ctx) {
+        for (entity, metric, value) in self.candidates(ctx) {
             if let Some(gate) = self.gate {
                 if !gate(ctx, entity) {
                     continue;
@@ -245,14 +246,13 @@ impl Rule for ThresholdRule {
             };
 
             let formatted = self.shape.format(value);
-            let mut evidence =
-                vec![
-                    Evidence::new(self.label, formatted.clone()).with_threshold(format!(
-                        "WARN > {} / CRIT > {}",
-                        self.shape.format(warn),
-                        self.shape.format(crit)
-                    )),
-                ];
+            let mut evidence = vec![Evidence::new(self.label, formatted.clone())
+                .with_threshold(format!(
+                    "WARN > {} / CRIT > {}",
+                    self.shape.format(warn),
+                    self.shape.format(crit)
+                ))
+                .with_series(SeriesKey::new(entity, metric))];
             if let Some(extra) = self.extra {
                 evidence.extend(extra(ctx, entity));
             }
@@ -370,9 +370,15 @@ impl Rule for SwapRule {
             title: format!("swap занят {:.0}%", ratio * 100.0),
             summary: "система вытесняет страницы в swap".to_string(),
             evidence: vec![
-                Evidence::new("swap занято", format!("{:.0}%", ratio * 100.0)).with_threshold(
-                    format!("WARN > {:.0}% / CRIT > {:.0}%", warn * 100.0, crit * 100.0),
-                ),
+                // Доля считается из двух серий; форма занятого объёма при
+                // неизменном размере swap совпадает с формой доли.
+                Evidence::new("swap занято", format!("{:.0}%", ratio * 100.0))
+                    .with_threshold(format!(
+                        "WARN > {:.0}% / CRIT > {:.0}%",
+                        warn * 100.0,
+                        crit * 100.0
+                    ))
+                    .with_series(SeriesKey::new(host, ids::HOST_SWAP_USED)),
                 Evidence::new(
                     "объём swap",
                     format!("{:.1} GiB", total / 1024.0 / 1024.0 / 1024.0),
@@ -838,6 +844,34 @@ mod tests {
                 .and_then(|e| e.threshold.as_ref())
                 .is_some(),
             "пользователь обязан видеть порог"
+        );
+    }
+
+    /// Интерфейс показывает форму доказательства по его серии. Ссылка
+    /// обязана указывать на ту сущность и метрику, где правило увидело
+    /// значение, иначе под «памятью юнита» нарисуется чужая кривая.
+    #[test]
+    fn primary_evidence_points_at_the_measured_series() {
+        let cfg = RulesCfg::default();
+        let mut fixture = Fixture::new();
+        let unit = fixture.unit;
+        fixture.set(unit, ids::CG_MEM_UTIL, 0.97);
+        let hits = rule("memory.pressure").evaluate(&fixture.ctx(&cfg));
+        let hit = hits.first().expect("срабатывание");
+        assert_eq!(
+            hit.evidence.first().and_then(|e| e.series),
+            Some(SeriesKey::new(unit, ids::CG_MEM_UTIL))
+        );
+
+        let host = fixture.graph.host();
+        fixture.set(host, ids::HOST_SWAP_TOTAL, 8.0 * 1024.0 * 1024.0 * 1024.0);
+        fixture.set(host, ids::HOST_SWAP_USED, 7.0 * 1024.0 * 1024.0 * 1024.0);
+        let hits = rule("swap.pressure").evaluate(&fixture.ctx(&cfg));
+        assert_eq!(
+            hits.first()
+                .and_then(|hit| hit.evidence.first())
+                .and_then(|e| e.series),
+            Some(SeriesKey::new(host, ids::HOST_SWAP_USED))
         );
     }
 

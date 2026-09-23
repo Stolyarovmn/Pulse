@@ -106,7 +106,7 @@ pub fn render(
             Screen::Overview => {
                 overview::render(frame, body, snapshot, app, &plan, theme, history);
             }
-            Screen::Problems => problems::render(frame, body, snapshot, app, &plan, theme),
+            Screen::Problems => problems::render(frame, body, snapshot, app, &plan, theme, history),
             Screen::Entities => {
                 entities::render(frame, body, snapshot, app, &plan, theme, history);
             }

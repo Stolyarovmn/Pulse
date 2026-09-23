@@ -1738,6 +1738,89 @@ fn metric_lanes_use_real_history_when_available() {
     assert!(io_lane.contains("collecting history"), "{io_lane}");
 }
 
+/// Кадр stage-1: Problems показывал «swap занят 93%» и «held for 8s», но не
+/// то, растёт ли величина. Доказательство со ссылкой на серию обязано
+/// показать форму за окно с пиком и средним в единицах метрики; без истории
+/// строка честно отсутствует.
+#[test]
+fn problem_evidence_shows_its_trend_from_history() {
+    use pulse_core::config::Store as StoreConfig;
+    use pulse_store::History;
+
+    let mut snapshot = critical();
+    let series = SeriesKey::new(snapshot.host, ids::HOST_PSI_MEM_FULL_AVG10);
+    let evidence = snapshot
+        .problems
+        .first_mut()
+        .and_then(|problem| problem.evidence.first_mut())
+        .expect("доказательство фикстуры");
+    *evidence = evidence.clone().with_series(series);
+
+    let mut history = History::new(&StoreConfig::default());
+    for tick in 1..=6_u64 {
+        history.ingest(&pulse_core::graph::TickBatch {
+            tick: pulse_core::time::TickId(tick),
+            at: Timestamp::from_millis(1_000 + tick * 1_000),
+            samples: vec![pulse_core::sample::Sample {
+                series,
+                value: 0.05 * f64::from(u32::try_from(tick).unwrap_or(1)),
+            }],
+            events: Vec::new(),
+            records: Vec::new(),
+            alive: vec![snapshot.host],
+        });
+    }
+    snapshot.at = Timestamp::from_millis(7_000);
+
+    let render = |history: Option<&crate::series::SeriesReader<'_>>| -> String {
+        let mut app = App::default();
+        app.screen = Screen::Problems;
+        let mut terminal = Terminal::new(TestBackend::new(180, 40)).expect("terminal");
+        let theme = Theme::with_capability(Capability::TrueColor);
+        terminal
+            .draw(|frame| super::render(frame, &snapshot, &mut app, &theme, history))
+            .expect("render");
+        let buffer = terminal.backend().buffer().clone();
+        (0..40)
+            .map(|row| {
+                (0..180)
+                    .map(|col| {
+                        buffer
+                            .cell((col, row))
+                            .and_then(|cell| cell.symbol().chars().next())
+                            .unwrap_or(' ')
+                    })
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let locked = std::sync::RwLock::new(history);
+    let reader = crate::series::SeriesReader::new(&locked);
+    let text = render(Some(&reader));
+    let lines: Vec<&str> = text.lines().collect();
+    let at = lines
+        .iter()
+        .position(|line| line.contains("PSI memory full:"))
+        .expect("строка доказательства");
+    let trend = lines.get(at + 1).copied().unwrap_or_default();
+    assert!(
+        trend.chars().any(|ch| "▁▂▃▄▅▆▇█".contains(ch)),
+        "форма под доказательством: {trend}"
+    );
+    assert!(
+        trend.contains("peak 30%"),
+        "пик в единицах метрики: {trend}"
+    );
+
+    let without = render(None);
+    assert!(
+        !without.contains("peak "),
+        "без истории строки тренда нет:\n{without}"
+    );
+}
+
 #[test]
 fn resize_roundtrip_preserves_semantic_context() {
     let snapshot = healthy();

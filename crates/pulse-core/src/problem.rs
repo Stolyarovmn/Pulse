@@ -8,6 +8,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::entity::EntityId;
+use crate::sample::SeriesKey;
 use crate::time::Timestamp;
 
 /// Уровень серьёзности. Порядок важен: используется для сортировки списка проблем.
@@ -45,6 +46,12 @@ pub struct Evidence {
     pub value: String,
     /// Порог, если он применим: `WARN > 10%`.
     pub threshold: Option<String>,
+    /// Серия, из которой взято значение, если оно измерено напрямую.
+    ///
+    /// Одно число «swap занят 93%» не отличает «растёт» от «держится неделю».
+    /// По этой ссылке интерфейс показывает форму величины за окно, не
+    /// угадывая метрику по тексту подписи.
+    pub series: Option<SeriesKey>,
 }
 
 impl Evidence {
@@ -54,12 +61,19 @@ impl Evidence {
             label: label.into(),
             value: value.into(),
             threshold: None,
+            series: None,
         }
     }
 
     #[must_use]
     pub fn with_threshold(mut self, threshold: impl Into<String>) -> Self {
         self.threshold = Some(threshold.into());
+        self
+    }
+
+    #[must_use]
+    pub const fn with_series(mut self, series: SeriesKey) -> Self {
+        self.series = Some(series);
         self
     }
 }
