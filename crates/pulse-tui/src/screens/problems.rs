@@ -91,19 +91,7 @@ fn render_empty(
     lines.push(section("STATE", width, plan, theme));
     let glyph = StateGlyph::from_snapshot(snapshot);
     let surface = GlyphSurface::build(&glyph, plan.glyph);
-    for row in surface.cells() {
-        let mut spans: Vec<Span<'_>> = Vec::new();
-        for (index, class) in row.iter().enumerate() {
-            if index > 0 {
-                spans.push(Span::raw(" "));
-            }
-            spans.push(Span::styled(
-                class.symbol(theme.capability).to_string(),
-                class.style(theme),
-            ));
-        }
-        lines.push(Line::from(spans));
-    }
+    lines.extend(super::glyph_lines(&glyph, &surface, plan, theme, width));
 
     if area.height >= 14 {
         lines.push(Line::from(""));

@@ -241,19 +241,7 @@ fn render_state(
 ) {
     let mut lines = vec![section("STATE", area.width, plan, theme)];
 
-    for row in surface.cells() {
-        let mut spans: Vec<Span<'_>> = Vec::new();
-        for (index, class) in row.iter().enumerate() {
-            if index > 0 && !matches!(plan.glyph, crate::layout::GlyphPreset::Compact) {
-                spans.push(Span::raw(" "));
-            }
-            spans.push(Span::styled(
-                class.symbol(theme.capability).to_string(),
-                class.style(theme),
-            ));
-        }
-        lines.push(Line::from(spans));
-    }
+    lines.extend(super::glyph_lines(glyph, surface, plan, theme, area.width));
 
     lines.push(Line::from(""));
     let overall = glyph.overall();
@@ -265,8 +253,12 @@ fn render_state(
     // состояния только фигуру и вердикт. Счётчик уместен лишь тогда, когда
     // он несёт число, которого нет ни в шапке, ни в ATTENTION.
     if plan.shows(Priority::P2) && !snapshot.problems.is_empty() {
+        let count = snapshot.problems.len();
         lines.push(Line::from(Span::styled(
-            format!("{} active problems", snapshot.problems.len()),
+            format!(
+                "{count} active problem{}",
+                if count == 1 { "" } else { "s" }
+            ),
             theme.dim(),
         )));
     }

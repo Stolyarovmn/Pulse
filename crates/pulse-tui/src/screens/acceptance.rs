@@ -603,6 +603,38 @@ fn unmeasured_memory_is_not_printed_as_zero() {
     );
 }
 
+/// Фигура состояния кодирует подсистему положением, и без подписи `▲` справа
+/// ничего не говорит. Легенда обязана назвать каждый сектор и показать его
+/// класс тем же символом, что и в фигуре: критическая память — `▲` у `mem`,
+/// спокойный cpu — не `▲`. Одинаковый набор символов у всех секторов означал
+/// бы украшение, а не карту.
+#[test]
+fn state_glyph_legend_maps_sectors_to_their_classes() {
+    let snapshot = critical();
+    let mut app = App::default();
+    let text = joined(180, 40, &snapshot, &mut app);
+    let cell = |name: &str| -> Option<char> {
+        let at = text.find(name)?;
+        text.get(at + name.len()..)?.trim_start().chars().next()
+    };
+    let critical_symbol = crate::state::StateClass::Critical.symbol(Capability::TrueColor);
+    assert_eq!(
+        cell("→ mem"),
+        Some(critical_symbol),
+        "сектор памяти:\n{text}"
+    );
+    for calm in ["↑ cpu", "← net", "↓ io"] {
+        let symbol = cell(calm);
+        assert!(symbol.is_some(), "нет подписи {calm}:\n{text}");
+        assert_ne!(symbol, Some(critical_symbol), "{calm} не критичен:\n{text}");
+    }
+    assert!(
+        text.lines()
+            .any(|line| line.trim_end() == "1 active problem"),
+        "счётчик в единственном числе:\n{text}"
+    );
+}
+
 #[test]
 fn search_overlay_is_visible_and_owns_input() {
     let snapshot = healthy();

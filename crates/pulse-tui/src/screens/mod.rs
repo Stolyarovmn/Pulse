@@ -689,6 +689,105 @@ pub(crate) const fn no_owner(theme: &Theme) -> &'static str {
     }
 }
 
+/// Строки фигуры состояния с подписью секторов справа.
+///
+/// Положение ячейки кодирует подсистему, но на кадре stage-1 это нигде не
+/// было сказано: оператор видел `▲` справа и не знал, что это память. Подпись
+/// превращает фигуру из украшения в карту: стрелка — сторона, имя — ресурс,
+/// символ — класс сектора. Числа не повторяются: они в SIGNALS.
+pub(crate) fn glyph_lines(
+    glyph: &crate::state::StateGlyph,
+    surface: &crate::glyph::GlyphSurface,
+    plan: &LayoutPlan,
+    theme: &Theme,
+    width: u16,
+) -> Vec<Line<'static>> {
+    use crate::state::Sector;
+
+    // Самая длинная строка легенды: «← net ·  → mem ▲».
+    const LEGEND_WIDTH: usize = 16;
+    const GAP: usize = 3;
+
+    let dense = matches!(
+        plan.glyph,
+        crate::layout::GlyphPreset::Compact | crate::layout::GlyphPreset::Minimal
+    );
+    let cells = surface.cells();
+    let glyph_width = cells
+        .iter()
+        .map(|row| {
+            if dense {
+                row.len()
+            } else {
+                (row.len() * 2).saturating_sub(1)
+            }
+        })
+        .max()
+        .unwrap_or(0);
+    let ascii = matches!(theme.capability, crate::theme::Capability::Ascii);
+    let (up, left, right, down) = if ascii {
+        ("^", "<", ">", "v")
+    } else {
+        ("↑", "←", "→", "↓")
+    };
+    let label = |arrow: &str, sector: Sector| -> Vec<Span<'static>> {
+        let class = glyph.sector(sector);
+        vec![
+            Span::styled(format!("{arrow} {:<4}", sector.label()), theme.dim()),
+            Span::styled(
+                class.symbol(theme.capability).to_string(),
+                class.style(theme),
+            ),
+        ]
+    };
+    let middle = cells.len() / 2;
+    let legend_fits =
+        !dense && cells.len() >= 3 && glyph_width + GAP + LEGEND_WIDTH <= usize::from(width);
+
+    cells
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            for (column, class) in row.iter().enumerate() {
+                if column > 0 && !dense {
+                    spans.push(Span::raw(" "));
+                }
+                spans.push(Span::styled(
+                    class.symbol(theme.capability).to_string(),
+                    class.style(theme),
+                ));
+            }
+            let legend = if !legend_fits {
+                Vec::new()
+            } else if index + 1 == middle {
+                label(up, Sector::Cpu)
+            } else if index == middle {
+                let mut both = label(left, Sector::Net);
+                both.push(Span::raw("  "));
+                both.extend(label(right, Sector::Memory));
+                both
+            } else if index == middle + 1 {
+                label(down, Sector::Io)
+            } else {
+                Vec::new()
+            };
+            if !legend.is_empty() {
+                let drawn = if dense {
+                    row.len()
+                } else {
+                    (row.len() * 2).saturating_sub(1)
+                };
+                spans.push(Span::raw(
+                    " ".repeat(glyph_width.saturating_sub(drawn) + GAP),
+                ));
+                spans.extend(legend);
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
 /// Безопасный доступ к прямоугольнику раскладки.
 ///
 /// `Layout::split` возвращает столько областей, сколько задано ограничений, но
