@@ -606,6 +606,35 @@ fn unmeasured_memory_is_not_printed_as_zero() {
     );
 }
 
+/// Коллектор публикует `0` для `cpu.max = max`. На stage-1 Inspector
+/// `system.slice` печатал `CPU limit 0.00c` — «ни одного ядра» у группы,
+/// которая ест шесть. Неизмеренная память там же — не `0 B`.
+#[test]
+fn unlimited_cgroup_is_not_shown_as_zero_cores() {
+    let mut snapshot = healthy();
+    let system = snapshot
+        .entities
+        .iter()
+        .find(|entity| entity.name == "system.slice")
+        .map(|entity| (entity.id, entity.key.clone()))
+        .expect("system.slice в фикстуре");
+    snapshot
+        .latest
+        .set(SeriesKey::new(system.0, ids::CG_CPU_LIMIT_CORES), 0.0);
+    let mut app = App::default();
+    app.open_inspector(system.1);
+    let text = joined(180, 40, &snapshot, &mut app);
+    let line = |label: &str| {
+        text.lines()
+            .find(|line| line.trim_start().starts_with(label))
+            .map(str::trim_end)
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert!(line("CPU limit").ends_with("none"), "{text}");
+    assert!(line("MEM").ends_with("not measured"), "{text}");
+}
+
 /// Фигура состояния кодирует подсистему положением, и без подписи `▲` справа
 /// ничего не говорит. Легенда обязана назвать каждый сектор и показать его
 /// класс тем же символом, что и в фигуре: критическая память — `▲` у `mem`,

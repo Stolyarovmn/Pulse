@@ -159,6 +159,19 @@ pub fn memory_of(snapshot: &Snapshot, entity: &Entity) -> f64 {
     snapshot.value_or(entity.id, memory_metric(entity.kind), 0.0)
 }
 
+/// Лимит CPU для показа.
+///
+/// Коллектор публикует `0` для `cpu.max = max`: так правила отличают «квоты
+/// нет» от «квота есть» (`limit > 0`). Печатать этот ноль как `0.00c`
+/// значило бы утверждать, что группе не дано ни одного ядра.
+#[must_use]
+pub fn cpu_limit_text(limit: Option<f64>) -> String {
+    match limit {
+        Some(cores) if cores > 0.0 => crate::format::cores(cores),
+        _ => "none".to_string(),
+    }
+}
+
 /// Память строки для показа: неизмеренная не выдаётся за ноль.
 #[must_use]
 pub fn memory_text(row: &EntityRow, placeholder: &str) -> String {

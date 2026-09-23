@@ -279,10 +279,9 @@ pub(crate) fn render_inspector_pane(
 fn summary_rows(snapshot: &Snapshot, entity: &Entity) -> Vec<(&'static str, String)> {
     use pulse_core::metric::ids;
     let mut rows: Vec<(&'static str, String)> = Vec::new();
-    let cpu = crate::rows::cpu_of(snapshot, entity);
-    let memory = crate::rows::memory_of(snapshot, entity);
-    rows.push(("CPU", crate::format::cores(cpu)));
-    rows.push(("MEM", crate::format::bytes(memory)));
+    let row = crate::rows::row_of(snapshot, entity);
+    rows.push(("CPU", crate::format::cores(row.cpu)));
+    rows.push(("MEM", crate::rows::memory_text(&row, "not measured")));
 
     match entity.kind {
         EntityKind::Cgroup | EntityKind::Unit | EntityKind::Container | EntityKind::Pod => {
@@ -291,10 +290,7 @@ fn summary_rows(snapshot: &Snapshot, entity: &Entity) -> Vec<(&'static str, Stri
             // объекта, а не суммы его потомков.
             rows.push(("scope", "descendants".to_string()));
             let limit = snapshot.value(entity.id, ids::CG_CPU_LIMIT_CORES);
-            rows.push((
-                "CPU limit",
-                limit.map_or_else(|| "none".to_string(), crate::format::cores),
-            ));
+            rows.push(("CPU limit", crate::rows::cpu_limit_text(limit)));
             if let Some(psi) = snapshot.value(entity.id, ids::CG_PSI_IO_FULL_AVG10) {
                 rows.push(("IO PSI", crate::format::percent(psi)));
             }

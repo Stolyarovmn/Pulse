@@ -511,18 +511,10 @@ fn details_rows(details: &pulse_core::ProcessDetails) -> Vec<(&'static str, Stri
 
 /// Числовая сводка: только осмысленные для этого вида величины.
 fn summary(snapshot: &Snapshot, entity: &Entity) -> Vec<(&'static str, String)> {
+    let row = crate::rows::row_of(snapshot, entity);
     let mut rows: Vec<(&'static str, String)> = vec![
-        (
-            "CPU",
-            format!(
-                "{} cores",
-                crate::format::cores(crate::rows::cpu_of(snapshot, entity))
-            ),
-        ),
-        (
-            "MEM",
-            crate::format::bytes(crate::rows::memory_of(snapshot, entity)),
-        ),
+        ("CPU", format!("{} cores", crate::format::cores(row.cpu))),
+        ("MEM", crate::rows::memory_text(&row, "not measured")),
     ];
 
     if matches!(
@@ -531,9 +523,7 @@ fn summary(snapshot: &Snapshot, entity: &Entity) -> Vec<(&'static str, String)> 
     ) {
         rows.push((
             "CPU limit",
-            snapshot
-                .value(entity.id, ids::CG_CPU_LIMIT_CORES)
-                .map_or_else(|| "none".to_string(), crate::format::cores),
+            crate::rows::cpu_limit_text(snapshot.value(entity.id, ids::CG_CPU_LIMIT_CORES)),
         ));
     }
     if let Some(psi) = snapshot.value(entity.id, ids::CG_PSI_IO_FULL_AVG10) {
