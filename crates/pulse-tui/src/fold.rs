@@ -129,8 +129,12 @@ fn owning_entity<'a>(snapshot: &'a Snapshot, entity: &Entity) -> Option<&'a Enti
     if let Some(owner) = direct_owner(snapshot, entity.id) {
         return Some(owner);
     }
-    // Затем вверх по родителям до первого логического владельца.
-    for id in snapshot.ancestry(entity.id) {
+    // Затем вверх по родителям до первого логического владельца. `ancestry`
+    // отдаёт цепочку от корня, поэтому обход идёт с конца: иначе первым
+    // находился самый внешний юнит, и процесс из
+    // `user@0.service/tmux-spawn-….scope` сворачивался в `user@0.service`
+    // (кадр stage-1, `pulse why`).
+    for id in snapshot.ancestry(entity.id).into_iter().rev() {
         if id == entity.id {
             continue;
         }
@@ -671,17 +675,39 @@ mod tests {
         let mut graph = EntityGraph::new("boot", "stage-1", Timestamp::from_millis(1_000));
         graph.begin_tick(Timestamp::from_millis(2_000));
         let host = graph.host();
+        // Внешний юнит пользовательского менеджера существует до baseline.
+        let user_manager = |graph: &mut EntityGraph| {
+            let cgroup = graph.upsert(
+                EntitySpec::new(EntityKey::Cgroup { cgroup_id: 30 }, "user@0.service").parent(host),
+            );
+            let unit = graph.upsert(
+                EntitySpec::new(
+                    EntityKey::Unit {
+                        name: "user.slice/user-0.slice/user@0.service".into(),
+                    },
+                    "user@0.service",
+                )
+                .parent(cgroup),
+            );
+            graph.relate(cgroup, RelationKind::OwnedBy, unit);
+            cgroup
+        };
         let busy = graph.upsert(
             EntitySpec::new(EntityKey::Cgroup { cgroup_id: 10 }, "system.slice").parent(host),
         );
+        let _ = user_manager(&mut graph);
         let _ = graph.end_tick();
 
         graph.begin_tick(Timestamp::from_millis(3_000));
         let _ = graph.upsert(
             EntitySpec::new(EntityKey::Cgroup { cgroup_id: 10 }, "system.slice").parent(host),
         );
+        let manager = user_manager(&mut graph);
+        // Как на живом узле (`pulse why`): scope сессии вложен во внешний
+        // юнит `user@0.service`, и владелец процесса — ближайший, а не внешний.
         let scope = graph.upsert(
-            EntitySpec::new(EntityKey::Cgroup { cgroup_id: 20 }, "tmux-spawn-1.scope").parent(host),
+            EntitySpec::new(EntityKey::Cgroup { cgroup_id: 20 }, "tmux-spawn-1.scope")
+                .parent(manager),
         );
         // Как на живом узле: сегмент `.scope` — это systemd-unit, который
         // владеет своей cgroup, и процесс агента сворачивается в него.
