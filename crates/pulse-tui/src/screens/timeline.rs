@@ -154,6 +154,20 @@ impl StoryRow {
     const fn is_group(&self) -> bool {
         self.count > 1
     }
+
+    /// Класс перехода состояния, если событие — переход.
+    ///
+    /// Вид события решает, переход ли это, а серьёзность — каким символом.
+    /// Один источник для оси и реки: на stage-1 река рисовала открытие
+    /// критической проблемы ромбом, а ось и Story — треугольником.
+    fn transition_class(&self) -> Option<StateClass> {
+        let baseline = state_transition(self.kind)?;
+        Some(if matches!(baseline, StateClass::Normal) {
+            baseline
+        } else {
+            StateClass::from_severity(self.severity).max(baseline)
+        })
+    }
 }
 
 /// Отметка события на оси времени.
@@ -183,16 +197,8 @@ fn rail_marks(story: &[StoryRow], start: Timestamp, end: Timestamp, width: usize
     let span = end.as_millis().saturating_sub(start.as_millis()).max(1);
     let mut marks: Vec<RailMark> = Vec::new();
     for row in story {
-        // Вид события решает, попадает ли оно на ось (переход состояния),
-        // а серьёзность — каким символом. Иначе критическая проблема
-        // выглядела бы на шкале обычным предупреждением.
-        let Some(baseline) = state_transition(row.kind) else {
+        let Some(class) = row.transition_class() else {
             continue;
-        };
-        let class = if matches!(baseline, StateClass::Normal) {
-            baseline
-        } else {
-            StateClass::from_severity(row.severity).max(baseline)
         };
         if row.at.as_millis() < start.as_millis() {
             continue;
@@ -342,7 +348,7 @@ fn render_state_river(
     let mut classes: Vec<StateClass> = story
         .iter()
         .rev()
-        .filter_map(|event| state_transition(event.kind))
+        .filter_map(StoryRow::transition_class)
         .collect();
     let current = snapshot
         .worst_severity()

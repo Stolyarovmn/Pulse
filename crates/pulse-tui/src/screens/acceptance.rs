@@ -891,6 +891,36 @@ fn inspector_never_renders_empty_top_level_page() {
     assert_eq!(app.screen, Screen::Timeline, "4 is Timeline, not Inspector");
 }
 
+/// Живой кадр stage-1: Story и ось рисовали открытие критической проблемы
+/// треугольником, а река состояний — ромбом. Один переход — один символ.
+#[test]
+fn state_river_marks_critical_opening_as_critical() {
+    let mut snapshot = healthy();
+    snapshot.meaningful.push(pulse_core::MeaningfulEvent {
+        at: Timestamp::from_millis(1_800),
+        last_at: Timestamp::from_millis(1_800),
+        kind: EventKind::ProblemOpened,
+        severity: Severity::Crit,
+        significance: pulse_core::semantic::Significance::Diagnostic,
+        entity: Some(snapshot.host),
+        entity_kind: Some(EntityKind::Host),
+        entity_name: "asuspc".to_string(),
+        detail: "swap 95%".to_string(),
+        count: 1,
+    });
+    let mut app = App::default();
+    app.screen = Screen::Timeline;
+    let text = joined(180, 40, &snapshot, &mut app);
+    let river = text
+        .lines()
+        .find(|line| line.starts_with("STATE  "))
+        .unwrap_or_default();
+    assert!(
+        river.contains('▲') && !river.contains('◆'),
+        "{river}\n{text}"
+    );
+}
+
 /// Живой кадр stage-1: `Enter` по видимой зацепке ничего не открыл — к
 /// моменту нажатия свежий снимок её уже не содержал. Курсор обязан держаться
 /// за объект при пересортировке, а `Enter` — открывать показанную строку.
