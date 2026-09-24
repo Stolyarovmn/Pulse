@@ -645,7 +645,10 @@ fn changes_lines(snapshot: &Snapshot, theme: &Theme) -> Vec<Line<'static>> {
     {
         lines.push(Line::from(vec![
             Span::styled(format!("{}  ", event.last_at), theme.dim()),
-            event_marker(event.kind, theme),
+            Span::styled(
+                crate::marks::event_mark(event.kind, event.severity, theme.capability).to_string(),
+                crate::marks::event_style(event.kind, event.severity, theme),
+            ),
             Span::raw(" "),
             Span::styled(headline(event), theme.text()),
             Span::raw("      "),
@@ -703,21 +706,4 @@ fn summary(event: &MeaningfulEvent) -> String {
             .to_string();
     }
     event.detail.clone()
-}
-
-/// Пунктуация события (раздел 133): `!` - событие, символы состояния - severity.
-fn event_marker(kind: EventKind, theme: &Theme) -> Span<'static> {
-    let ascii = matches!(theme.capability, Capability::Ascii);
-    match kind {
-        EventKind::ObservationStarted => {
-            Span::styled(if ascii { "O" } else { "●" }.to_string(), theme.strong())
-        }
-        EventKind::ProblemClosed => {
-            Span::styled(if ascii { "o" } else { "○" }.to_string(), theme.dim())
-        }
-        _ => Span::styled(
-            "!".to_string(),
-            theme.severity(pulse_core::problem::Severity::Info),
-        ),
-    }
 }

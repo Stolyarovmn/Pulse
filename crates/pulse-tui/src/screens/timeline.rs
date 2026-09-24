@@ -53,14 +53,14 @@ pub(crate) fn render(
         .constraints([
             Constraint::Length(3),
             Constraint::Length(2),
-            Constraint::Length(3),
+            Constraint::Length(4),
             Constraint::Min(3),
         ])
         .split(area);
 
     render_rail(frame, rect(&top, 0), snapshot, &story, app, theme);
     render_state_river(frame, rect(&top, 1), snapshot, &story, theme);
-    render_metric_lanes(frame, rect(&top, 2), snapshot, app, theme, history);
+    render_metric_lanes(frame, rect(&top, 2), snapshot, &story, app, theme, history);
 
     let lower = rect(&top, 3);
     if app.pane_is_visible(Pane::Inspector) {
@@ -380,6 +380,7 @@ fn render_metric_lanes(
     frame: &mut Frame<'_>,
     area: Rect,
     snapshot: &Snapshot,
+    story: &[StoryRow],
     app: &App,
     theme: &Theme,
     history: Option<&crate::series::SeriesReader<'_>>,
@@ -401,7 +402,7 @@ fn render_metric_lanes(
         ("MEM", pulse_core::metric::ids::HOST_MEM_UTIL),
         ("IO", pulse_core::metric::ids::HOST_PSI_IO_FULL_AVG10),
     ];
-    let lines: Vec<Line<'_>> = lanes
+    let mut lines: Vec<Line<'_>> = lanes
         .iter()
         .map(|(label, metric)| {
             let points = history.map_or_else(Vec::new, |history| {
@@ -432,12 +433,94 @@ fn render_metric_lanes(
             };
             Line::from(vec![
                 Span::styled(format!("{label:<6}"), theme.dim()),
-                Span::styled(reading, theme.text()),
+                // Цвет значения — тревога по порогу доли, а не украшение:
+                // спокойное число остаётся текстом.
+                Span::styled(
+                    reading,
+                    current.map_or(theme.text(), |value| theme.ratio(value)),
+                ),
                 lane,
             ])
         })
         .collect();
+    // События в тех же ячейках времени, что и столбики: всплеск CPU и
+    // перезапуск под ним читаются как одно мгновение. Число — сколько
+    // событий попало в окно.
+    let (marks, count) = event_lane(story, (from, to), width, theme);
+    let mut spans = vec![
+        Span::styled("EVENTS", theme.dim()),
+        Span::styled(format!("{count:>4} "), theme.text()),
+    ];
+    spans.extend(marks);
+    lines.push(Line::from(spans));
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// Дорожка событий: знак вида события в ячейке его момента.
+///
+/// Ячейки размечены так же, как в [`crate::format::scaled_lane`], иначе знак
+/// стоял бы не под своим столбиком. В одной ячейке остаётся самое тревожное
+/// событие ([`crate::marks::event_rank`]); у группы отмечены первое и
+/// последнее наблюдение.
+fn event_lane(
+    story: &[StoryRow],
+    window: (Timestamp, Timestamp),
+    width: usize,
+    theme: &Theme,
+) -> (Vec<Span<'static>>, usize) {
+    let spaced = width >= 16;
+    let cells = (if spaced { width / 2 } else { width }).max(1);
+    let (from, to) = window;
+    let span = to.as_millis().saturating_sub(from.as_millis()).max(1);
+    let mut slots: Vec<Option<(u8, char, ratatui::style::Style)>> = vec![None; cells];
+    let mut count = 0;
+    for row in story {
+        let moments = if row.is_group() {
+            vec![row.at, row.last_at]
+        } else {
+            vec![row.at]
+        };
+        let mut inside = false;
+        for at in moments {
+            if at.as_millis() < from.as_millis() || at.as_millis() > to.as_millis() {
+                continue;
+            }
+            inside = true;
+            let offset = at.as_millis().saturating_sub(from.as_millis());
+            let index = usize::try_from(offset * (cells as u64) / span)
+                .unwrap_or(cells - 1)
+                .min(cells - 1);
+            let rank = crate::marks::event_rank(row.kind, row.severity);
+            if let Some(slot) = slots.get_mut(index) {
+                if slot.is_none_or(|(kept, _, _)| rank > kept) {
+                    *slot = Some((
+                        rank,
+                        crate::marks::event_mark(row.kind, row.severity, theme.capability),
+                        crate::marks::event_style(row.kind, row.severity, theme),
+                    ));
+                }
+            }
+        }
+        if inside {
+            count += 1;
+        }
+    }
+    let gap = if matches!(theme.capability, Capability::Ascii) {
+        "."
+    } else {
+        "·"
+    };
+    let mut spans = Vec::with_capacity(cells * 2);
+    for (index, slot) in slots.into_iter().enumerate() {
+        if spaced && index > 0 {
+            spans.push(Span::raw(" "));
+        }
+        spans.push(match slot {
+            Some((_, mark, style)) => Span::styled(mark.to_string(), style),
+            None => Span::styled(gap, theme.faint()),
+        });
+    }
+    (spans, count)
 }
 
 fn render_story(
@@ -477,7 +560,7 @@ fn render_story(
     let start = selected.saturating_sub(visible.saturating_sub(1));
     for (index, event) in story.iter().enumerate().skip(start).take(visible) {
         let selected_row = index == selected;
-        let marker = event_marker(event.kind, theme.capability);
+        let marker = crate::marks::event_mark(event.kind, event.severity, theme.capability);
         let summary = if event.kind == EventKind::ObservationStarted {
             "PULSE observation started".to_string()
         } else if event.is_group() {
@@ -488,25 +571,45 @@ fn render_story(
         } else {
             format!("{} — {}", event.name, event.detail)
         };
-        let text = format!(
-            "{}{} {} {}",
-            ui::row_marker(selected_row),
-            event.at,
-            marker,
-            ui::truncate(
-                &summary,
-                usize::from(body.width).saturating_sub(15),
-                theme.capability
-            )
-        );
-        lines.push(Line::from(Span::styled(
-            text,
-            if selected_row {
-                theme.selection()
-            } else {
-                theme.text()
-            },
-        )));
+        let row_style = if selected_row {
+            theme.selection()
+        } else {
+            theme.text()
+        };
+        let mark_style = crate::marks::event_style(event.kind, event.severity, theme);
+        let mut spans = vec![
+            Span::styled(
+                format!("{}{} ", ui::row_marker(selected_row), event.at),
+                row_style,
+            ),
+            Span::styled(
+                marker.to_string(),
+                if selected_row {
+                    mark_style.bg(theme.selection().bg.unwrap_or_default())
+                } else {
+                    mark_style
+                },
+            ),
+            Span::styled(
+                format!(
+                    " {}",
+                    ui::truncate(
+                        &summary,
+                        usize::from(body.width).saturating_sub(15),
+                        theme.capability
+                    )
+                ),
+                row_style,
+            ),
+        ];
+        if selected_row {
+            let used: usize = spans.iter().map(|span| ui::width_of(&span.content)).sum();
+            spans.push(Span::styled(
+                " ".repeat(usize::from(body.width).saturating_sub(used)),
+                row_style,
+            ));
+        }
+        lines.push(Line::from(spans));
     }
     frame.render_widget(Paragraph::new(lines), body);
 }
@@ -608,43 +711,6 @@ const fn state_transition(kind: EventKind) -> Option<StateClass> {
     }
 }
 
-fn event_marker(kind: EventKind, capability: Capability) -> char {
-    let ascii = matches!(capability, Capability::Ascii);
-    match kind {
-        EventKind::ObservationStarted => {
-            if ascii {
-                '*'
-            } else {
-                '●'
-            }
-        }
-        EventKind::ProblemClosed => {
-            if ascii {
-                'o'
-            } else {
-                '○'
-            }
-        }
-        EventKind::ProblemOpened => {
-            if ascii {
-                '*'
-            } else {
-                '◆'
-            }
-        }
-        EventKind::CollectorError => {
-            if ascii {
-                'x'
-            } else {
-                '×'
-            }
-        }
-        // Restart/OOM/deploy-like lifecycle facts are discrete events.
-        // `!` is event punctuation, never a State Glyph cell (§183–186).
-        _ => '!',
-    }
-}
-
 #[cfg(test)]
 mod rail_tests {
     use super::*;
@@ -697,6 +763,40 @@ mod rail_tests {
         );
         assert_eq!(warn[0].class, StateClass::Warning);
     }
+
+    /// Дорожка событий: знак в ячейке момента, в общей ячейке — самое
+    /// тревожное, события вне окна не считаются. OOM не прячется за
+    /// «появился процесс», перезапуск и OOM различимы формой.
+    #[test]
+    fn event_lane_keeps_the_worst_mark_per_cell() {
+        let theme = Theme::with_capability(Capability::TrueColor);
+        let story = [
+            // 4.5 с на ячейку: 50.0 и 50.1 с попадают в одну. Худшее идёт
+            // первым: иначе «последний перетирает» случайно давал бы верный
+            // ответ.
+            row(EventKind::OomKill, 50_000),
+            row(EventKind::Created, 50_100),
+            row(EventKind::Restarted, 90_000),
+            row(EventKind::Restarted, 5_000),
+        ];
+        let (spans, count) = event_lane(
+            &story,
+            (
+                Timestamp::from_millis(10_000),
+                Timestamp::from_millis(100_000),
+            ),
+            40,
+            &theme,
+        );
+        assert_eq!(count, 3, "событие до окна не считается");
+        let lane: String = spans.iter().map(|span| span.content.as_ref()).collect();
+        assert!(lane.contains('▼') && !lane.contains('+'), "{lane}");
+        assert_eq!(lane.matches('↻').count(), 1, "{lane}");
+        let oom = lane.chars().position(|ch| ch == '▼').unwrap_or(0);
+        let restart = lane.chars().position(|ch| ch == '↻').unwrap_or(0);
+        assert!(oom < restart, "знаки в порядке времени: {lane}");
+    }
+
     /// Отметки обязаны стоять в момент события, а не в начале оси.
     ///
     /// Дефект с живого прогона: ось была прямой линией, по которой нельзя
