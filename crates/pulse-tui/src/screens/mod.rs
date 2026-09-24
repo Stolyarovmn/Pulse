@@ -100,7 +100,7 @@ pub fn render(
     }
 
     if app.inspector.is_some() {
-        inspector::render(frame, body, snapshot, app, &plan, theme);
+        inspector::render(frame, body, snapshot, app, &plan, theme, history);
     } else {
         match app.screen {
             Screen::Overview => {
@@ -437,8 +437,8 @@ pub(crate) fn focused_section<'a>(
     let content_width = width.saturating_sub(2);
     let text = ui::section_title(title, content_width, plan.section_rules, theme.capability);
     Line::from(vec![
-        Span::styled(accent, if focused { theme.strong() } else { theme.dim() }),
-        Span::styled(text, if focused { theme.strong() } else { theme.dim() }),
+        Span::styled(accent, if focused { theme.accent() } else { theme.dim() }),
+        Span::styled(text, if focused { theme.accent() } else { theme.dim() }),
     ])
 }
 

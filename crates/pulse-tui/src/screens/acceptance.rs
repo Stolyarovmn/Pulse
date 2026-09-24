@@ -624,15 +624,16 @@ fn unlimited_cgroup_is_not_shown_as_zero_cores() {
     let mut app = App::default();
     app.open_inspector(system.1);
     let text = joined(180, 40, &snapshot, &mut app);
-    let line = |label: &str| {
+    // Дело раскладывается в колонки, поэтому значение ищется сразу за
+    // подписью, а не в конце строки.
+    let after = |label: &str| {
         text.lines()
-            .find(|line| line.trim_start().starts_with(label))
-            .map(str::trim_end)
+            .find_map(|line| line.split_once(label).map(|(_, rest)| rest.trim_start()))
             .unwrap_or_default()
             .to_string()
     };
-    assert!(line("CPU limit").ends_with("none"), "{text}");
-    assert!(line("MEM").ends_with("not measured"), "{text}");
+    assert!(after("CPU limit").starts_with("none"), "{text}");
+    assert!(after("MEM ").starts_with("not measured"), "{text}");
 }
 
 /// Фигура состояния кодирует подсистему положением, и без подписи `▲` справа
@@ -829,7 +830,7 @@ fn inspector_cycle_is_unreachable_by_drilling() {
     assert!(
         targets.iter().all(|target| target.key != a),
         "возврат в начало цепочки не предлагается: {:?}",
-        targets.iter().map(|t| t.label).collect::<Vec<_>>()
+        targets.iter().map(|t| t.name.clone()).collect::<Vec<_>>()
     );
     assert!(
         targets.is_empty(),
@@ -2156,8 +2157,8 @@ fn inspector_aggregates_repeated_relations() {
     // Шесть дисков не занимают шесть строк цепочки: диск не звено
     // расследования, а ресурс. Он живёт одной строкой контекста.
     assert!(
-        text.contains("RESOURCES"),
-        "ресурсы обязаны быть отдельным блоком: {text}"
+        text.contains("resources"),
+        "ресурсы обязаны быть отдельной строкой контекста: {text}"
     );
     let resource_lines = text
         .lines()
@@ -2200,7 +2201,8 @@ fn quit_works_from_the_pipe_overlay() {
 /// На stage-1 CHILDREN у `system.slice` состоял из `docker-<64 hex>.scope`:
 /// в свёртку детей не попадают процессы контейнера, и имя не выводилось.
 /// Узнаваемое имя берётся у процесса внутри контейнера, одноимённые
-/// различаются коротким ID.
+/// различаются коротким ID. Проверяется и список, по которому ходит Enter,
+/// и кадр: они обязаны совпадать.
 #[test]
 fn inspector_children_use_process_names_for_containers() {
     let snapshot = production_like();
@@ -2212,27 +2214,20 @@ fn inspector_children_use_process_names_for_containers() {
         .expect("system.slice");
     let mut app = App::default();
     app.open_inspector(system);
-    let text = joined(180, 60, &snapshot, &mut app);
-    let children: Vec<&str> = text
-        .lines()
-        .skip_while(|line| !line.starts_with("CHILDREN"))
-        .skip(1)
-        .take_while(|line| !line.trim().is_empty())
+    let inside: Vec<String> = app
+        .inspector_relations(&snapshot)
+        .into_iter()
+        .map(|row| row.name)
         .collect();
-    assert!(!children.is_empty(), "блок CHILDREN:\n{text}");
-    for line in &children {
-        // Строка: `  <kind>  <имя> [короткий ID]  <символ>`; хешем не может
-        // быть само имя, а суффикс-различитель допустим.
-        let name = line.split_whitespace().nth(1).unwrap_or_default();
-        assert!(
-            !crate::fold::is_opaque_id(name),
-            "хеш вместо имени: {line}\n{text}"
-        );
+    assert!(!inside.is_empty(), "INSIDE пуст");
+    for name in &inside {
+        // Хешем не может быть само имя, а суффикс-различитель допустим.
+        let head = name.split_whitespace().next().unwrap_or_default();
+        assert!(!crate::fold::is_opaque_id(head), "хеш вместо имени: {name}");
     }
-    assert!(
-        children.iter().any(|line| line.contains("postgres")),
-        "{children:?}"
-    );
+    assert!(inside.iter().any(|name| name == "postgres"), "{inside:?}");
+    let text = joined(180, 60, &snapshot, &mut app);
+    assert!(text.contains("postgres"), "{text}");
 }
 
 /// Цепочка и боковые переходы - разные списки, и Tab честно переключает их.
@@ -2249,17 +2244,27 @@ fn chain_and_side_jumps_are_separate_lists() {
 
     let mut app = App::default();
     app.open_inspector(cgroup);
+    let focused = |text: &str| -> String {
+        text.lines()
+            .find(|line| line.contains('▌'))
+            .unwrap_or_default()
+            .to_string()
+    };
     let text = joined(140, 44, &snapshot, &mut app);
     assert!(
-        text.contains("CHAIN <ENTER>"),
-        "по умолчанию Enter ведёт по цепечке: {text}"
+        focused(&text).contains("INSIDE") && focused(&text).contains("enter"),
+        "по умолчанию Enter ведёт внутрь объекта: {text}"
     );
 
     let _ = app.dispatch(key(KeyCode::Tab), &snapshot);
     let text = joined(140, 44, &snapshot, &mut app);
+    let inside = text
+        .lines()
+        .find(|line| line.contains("INSIDE"))
+        .unwrap_or_default();
     assert!(
-        text.contains("RELATED <ENTER>") && text.contains("CHAIN <TAB>"),
-        "Tab переключил активный список: {text}"
+        !focused(&text).contains("INSIDE") && inside.contains("tab"),
+        "Tab передал Enter другому списку: {text}"
     );
 }
 
@@ -2281,7 +2286,7 @@ fn side_jump_restarts_the_investigation() {
         .position(|step| step.label == "parent")
         .expect("родитель в боковых переходах");
     if let Some(session) = &mut app.inspector {
-        session.side_active = true;
+        session.list = crate::app::InspectorList::Related;
         session.relation_selected = owner;
     }
     let _ = app.dispatch(key(KeyCode::Enter), &snapshot);
@@ -2294,9 +2299,10 @@ fn side_jump_restarts_the_investigation() {
         session.path
     );
     assert_eq!(session.current, a, "новый корень - объект прыжка");
-    assert!(
-        !session.side_active,
-        "после прыжка Enter снова ведёт по цепочке"
+    assert_eq!(
+        session.list,
+        crate::app::InspectorList::Chain,
+        "после прыжка Enter снова ведёт внутрь"
     );
 }
 

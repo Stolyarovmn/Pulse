@@ -1,9 +1,13 @@
 //! Визуальный язык.
 //!
-//! Монохромная сетка: цвет используется только как носитель состояния
-//! (норма/предупреждение/критично), а не для украшения. Это делает экран
-//! читаемым и в ssh-сессии, и на монохромном терминале, и снимает у оператора
-//! задачу «расшифровать палитру».
+//! Цвет несёт два смысла и только их: **состояние** (норма, предупреждение,
+//! критично) и **место** — где сейчас фокус, что выбрано, на каком экране
+//! оператор. Всё остальное приглушено: подписи, линии, единицы. Так яркое в
+//! кадре всегда значит «здесь беда» или «здесь ты», а не украшение.
+//!
+//! Палитра приглушённая (ориентир — netwatch): на truecolor это мягкие тона
+//! на тёмном фоне, на 256 цветах — ближайшие индексы, в ASCII — базовые
+//! цвета. Смысл при этом один на всех уровнях.
 //!
 //! Три уровня возможностей терминала. Различие не косметическое: в ASCII-режиме
 //! не должно остаться ни одного символа вне ASCII, иначе вывод в старом
@@ -110,32 +114,67 @@ impl Theme {
         }
     }
 
+    /// Цвет по уровню возможностей: truecolor, 256 цветов, базовый.
+    const fn pick(&self, rgb: (u8, u8, u8), indexed: u8, basic: Color) -> Color {
+        match self.capability {
+            Capability::TrueColor => Color::Rgb(rgb.0, rgb.1, rgb.2),
+            Capability::Ansi256 => Color::Indexed(indexed),
+            Capability::Ascii => basic,
+        }
+    }
+
     /// Основной текст.
     #[must_use]
     pub fn text(&self) -> Style {
-        Style::default().fg(Color::Gray)
+        Style::default().fg(self.pick((190, 196, 206), 251, Color::Gray))
     }
 
     /// Акцентированный текст: числа, имена сущностей.
     #[must_use]
     pub fn strong(&self) -> Style {
         Style::default()
-            .fg(Color::White)
+            .fg(self.pick((236, 239, 244), 255, Color::White))
             .add_modifier(Modifier::BOLD)
     }
 
-    /// Второстепенный текст: подписи, единицы.
+    /// Второстепенный текст: подписи, единицы, линии.
     #[must_use]
     pub fn dim(&self) -> Style {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(self.pick((104, 112, 128), 243, Color::DarkGray))
+    }
+
+    /// Самый тихий слой: пустые клетки графиков и шкал.
+    #[must_use]
+    pub fn faint(&self) -> Style {
+        Style::default().fg(self.pick((62, 68, 82), 238, Color::DarkGray))
+    }
+
+    /// Место: фокус, текущий объект расследования, активный экран.
+    ///
+    /// Отдельный от состояний оттенок: синий не встречается среди severity,
+    /// поэтому «здесь ты» никогда не спутать с «здесь беда».
+    #[must_use]
+    pub fn accent(&self) -> Style {
+        Style::default()
+            .fg(self.pick((110, 170, 235), 75, Color::Blue))
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Плашка активного элемента навигации: активный экран в футере.
+    #[must_use]
+    pub fn accent_chip(&self) -> Style {
+        Style::default()
+            .fg(self.pick((18, 22, 30), 234, Color::Black))
+            .bg(self.pick((110, 170, 235), 75, Color::Blue))
+            .add_modifier(Modifier::BOLD)
     }
 
     /// Выделенная строка списка.
     #[must_use]
     pub fn selection(&self) -> Style {
         Style::default()
-            .fg(Color::Black)
-            .bg(Color::Gray)
+            .fg(self.pick((236, 239, 244), 255, Color::Black))
+            .bg(self.pick((44, 62, 92), 24, Color::Gray))
             .add_modifier(Modifier::BOLD)
     }
 
@@ -145,16 +184,16 @@ impl Theme {
     /// превращает её в световое пятно и убивает читаемость severity.
     #[must_use]
     pub fn nominal(&self) -> Style {
-        Style::default().fg(Color::Green)
+        Style::default().fg(self.pick((142, 192, 124), 108, Color::Green))
     }
 
-    /// Цвет состояния. Единственное место, где цвет несёт смысл.
+    /// Цвет состояния. Единственное место, где цвет несёт смысл тревоги.
     #[must_use]
     pub fn severity(&self, severity: Severity) -> Style {
         let color = match severity {
-            Severity::Info => Color::Cyan,
-            Severity::Warn => Color::Yellow,
-            Severity::Crit => Color::Red,
+            Severity::Info => self.pick((96, 186, 196), 73, Color::Cyan),
+            Severity::Warn => self.pick((226, 188, 116), 179, Color::Yellow),
+            Severity::Crit => self.pick((228, 104, 112), 167, Color::Red),
         };
         Style::default().fg(color).add_modifier(Modifier::BOLD)
     }

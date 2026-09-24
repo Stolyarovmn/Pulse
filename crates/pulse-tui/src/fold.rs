@@ -125,7 +125,8 @@ fn logical_key(snapshot: &Snapshot, entity: &Entity) -> LogicalObjectKey {
 }
 
 /// Логический владелец сущности: unit, контейнер или pod.
-fn owning_entity<'a>(snapshot: &'a Snapshot, entity: &Entity) -> Option<&'a Entity> {
+#[must_use]
+pub fn owning_entity<'a>(snapshot: &'a Snapshot, entity: &Entity) -> Option<&'a Entity> {
     // Прямые связи владения важнее иерархии: cgroup явно указывает владельца.
     if let Some(owner) = direct_owner(snapshot, entity.id) {
         return Some(owner);
@@ -405,6 +406,28 @@ fn child_process_name(snapshot: &Snapshot, members: &[EntityId]) -> Option<Strin
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
         .map(|child| child.name.clone())
+}
+
+/// Узнаваемое имя одной сущности вне свёртки.
+///
+/// Тот же приём, что у логического вида: хеш контейнера заменяется именем
+/// главного процесса, а короткий ID остаётся рядом — в зацепке расследования
+/// одно и то же имя `node` у тридцати контейнеров не говорит, куда идти.
+#[must_use]
+pub fn display_name(snapshot: &Snapshot, entity: &Entity) -> String {
+    if !is_opaque_id(&entity.name) {
+        return entity.name.clone();
+    }
+    let short: String = opaque_core(&entity.name).chars().take(12).collect();
+    // Сущность контейнера — ребёнок своей cgroup, процессы живут под cgroup.
+    let mut members = vec![entity.id];
+    if matches!(entity.kind, EntityKind::Container | EntityKind::Pod) {
+        members.extend(entity.parent);
+    }
+    match child_process_name(snapshot, &members) {
+        Some(name) => format!("{name} {short}"),
+        None => short,
+    }
 }
 
 /// Взвешенный вклад одной причины в значимость строки.

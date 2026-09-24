@@ -325,7 +325,7 @@ fn render_detail(
 /// Строка появляется только у доказательства со ссылкой на серию и только
 /// при подключённой истории; пик и среднее печатаются в единицах самой
 /// метрики, потому что форма нормирована по пику окна.
-fn evidence_trend(
+pub(crate) fn evidence_trend(
     source: &crate::screens::overview::TrendSource<'_>,
     evidence: &pulse_core::problem::Evidence,
     width: u16,

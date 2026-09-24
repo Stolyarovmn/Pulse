@@ -137,7 +137,7 @@ impl StateClass {
     pub fn style(self, theme: &Theme) -> ratatui::style::Style {
         match self {
             // Фон поля обязан быть виден, но не должен спорить с массой.
-            StateClass::Inactive => theme.dim(),
+            StateClass::Inactive => theme.faint(),
             // Контур - система отсчёта, а не активность.
             StateClass::Normal => theme.dim(),
             // Штатная активная масса: спокойный цвет, а не белый акцент.

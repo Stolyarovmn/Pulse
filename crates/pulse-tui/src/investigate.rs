@@ -105,6 +105,24 @@ pub struct Step {
 /// создавал круги сервис → диск → другой сервис.
 #[must_use]
 pub fn drill_steps(snapshot: &Snapshot, id: EntityId) -> Vec<Step> {
+    let mut steps: Vec<Step> = Vec::new();
+    for candidate in drill_candidates(snapshot, id) {
+        push_step(
+            &mut steps,
+            candidate.key.clone(),
+            &candidate.name,
+            candidate.kind,
+        );
+    }
+
+    // Сначала ближайший уровень: расследование спускается по одной ступени.
+    steps.sort_by_key(|step| (Level::of(step.kind).depth(), step.name.clone()));
+    steps
+}
+
+/// Уникальные объекты строго глубже текущего — общий источник для
+/// [`drill_steps`] и [`descend`].
+fn drill_candidates(snapshot: &Snapshot, id: EntityId) -> Vec<&pulse_core::entity::Entity> {
     let Some(entity) = snapshot.entity(id) else {
         return Vec::new();
     };
@@ -121,13 +139,10 @@ pub fn drill_steps(snapshot: &Snapshot, id: EntityId) -> Vec<Step> {
     // хранит ключ лишь первого объекта, поэтому остальные проходили проверку
     // «уже добавлен» второй раз и на живом хосте 40 процессов показывались
     // как «5 × process» из двух источников — связей и дерева владения.
-    let mut candidates: Vec<(EntityKey, String, EntityKind)> = Vec::new();
-    let mut push_candidate = |key: EntityKey, name: &str, kind: EntityKind| {
-        if candidates.iter().any(|(existing, _, _)| *existing == key) {
-            return;
-        }
-        candidates.push((key, name.to_string(), kind));
-    };
+    let mut candidates: Vec<&pulse_core::entity::Entity> = Vec::new();
+    // Проверка «уже добавлен» — по множеству: у `system.slice` на stage-1
+    // больше двухсот детей, и линейный поиск делал сбор квадратичным.
+    let mut seen: std::collections::HashSet<EntityId> = std::collections::HashSet::new();
 
     for relation in snapshot.relations_of(id, None) {
         let other_id = if relation.from == id {
@@ -144,7 +159,9 @@ pub fn drill_steps(snapshot: &Snapshot, id: EntityId) -> Vec<Step> {
         if level.is_resource() || level.depth() <= current.depth() {
             continue;
         }
-        push_candidate(other.key.clone(), &other.name, other.kind);
+        if seen.insert(other.id) {
+            candidates.push(other);
+        }
     }
 
     // Дети по дереву владения: связь `ParentOf` может отсутствовать, а
@@ -158,17 +175,93 @@ pub fn drill_steps(snapshot: &Snapshot, id: EntityId) -> Vec<Step> {
         if level.is_resource() || level.depth() < current.depth() {
             continue;
         }
-        push_candidate(candidate.key.clone(), &candidate.name, candidate.kind);
+        if seen.insert(candidate.id) {
+            candidates.push(candidate);
+        }
     }
+    candidates
+}
 
-    let mut steps: Vec<Step> = Vec::new();
-    for (key, name, kind) in candidates {
-        push_step(&mut steps, key, &name, kind);
+/// Строка спуска инспектора: один логический объект внутри текущего.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Descent {
+    /// Куда ведёт `Enter`.
+    pub key: EntityKey,
+    pub name: String,
+    /// Вид с составом: `unit+9p`.
+    pub kind_label: String,
+    pub state: crate::state::StateClass,
+    pub cpu: f64,
+    /// Память, если измерена.
+    pub memory: Option<f64>,
+}
+
+/// Что внутри объекта: каждый логический объект отдельной строкой.
+///
+/// [`drill_steps`] сворачивает однотипное в «197 × cgroup», и `Enter` по такой
+/// строке открывал первый попавшийся объект — выбрать, куда спуститься, было
+/// нельзя. Здесь объекты свёрнуты логически (процессы в свой сервис) и
+/// упорядочены так, как их расследуют: сначала ненормальные, затем самые
+/// нагруженные. У unit, контейнера и pod содержимое живёт в их cgroup,
+/// поэтому спуск начинается сразу с неё, без лишнего шага «в свою cgroup».
+#[must_use]
+pub fn descend(snapshot: &Snapshot, id: EntityId) -> Vec<Descent> {
+    let Some(entity) = snapshot.entity(id) else {
+        return Vec::new();
+    };
+    let own = crate::leads::twins(snapshot, id);
+    let root = crate::leads::subtree_root(snapshot, entity);
+    let mut sources = vec![id];
+    if root != id {
+        sources.push(root);
     }
-
-    // Сначала ближайший уровень: расследование спускается по одной ступени.
-    steps.sort_by_key(|step| (Level::of(step.kind).depth(), step.name.clone()));
-    steps
+    let mut rows: Vec<crate::rows::EntityRow> = Vec::new();
+    for source in sources {
+        for candidate in drill_candidates(snapshot, source) {
+            if own.contains(&candidate.id) || candidate.id == root {
+                continue;
+            }
+            if rows.iter().all(|row| row.id != candidate.id) {
+                rows.push(crate::rows::row_of(snapshot, candidate));
+            }
+        }
+    }
+    // Части, чей логический владелец — сам объект, сворачивать не во что:
+    // иначе девять процессов `docker.service` становились одной строкой
+    // `dockerd`, и выбрать процесс было нельзя. Чужие объекты (сервисы и
+    // контейнеры внутри слайса) сворачиваются как обычно.
+    let (mine, others): (Vec<_>, Vec<_>) = rows.into_iter().partition(|row| {
+        snapshot
+            .entity(row.id)
+            .and_then(|part| crate::fold::owning_entity(snapshot, part))
+            .is_some_and(|owner| own.contains(&owner.id))
+    });
+    let mut folded = crate::fold::fold(snapshot, &others);
+    for row in mine {
+        folded.extend(crate::fold::fold(snapshot, std::slice::from_ref(&row)));
+    }
+    folded.sort_by(|a, b| {
+        b.row
+            .state
+            .cmp(&a.row.state)
+            .then_with(|| b.row.cpu.total_cmp(&a.row.cpu))
+            .then_with(|| b.row.memory.total_cmp(&a.row.memory))
+            .then_with(|| a.row.name.cmp(&b.row.name))
+    });
+    folded
+        .into_iter()
+        .filter_map(|logical| {
+            let key = snapshot.entity(logical.row.id)?.key.clone();
+            Some(Descent {
+                key,
+                kind_label: logical.kind_label(),
+                state: logical.row.state,
+                cpu: logical.row.cpu,
+                memory: logical.row.memory_measured.then_some(logical.row.memory),
+                name: logical.row.name,
+            })
+        })
+        .collect()
 }
 
 /// Ресурсы объекта: контекст, а не звенья цепочки.
@@ -273,7 +366,7 @@ pub fn side_steps(snapshot: &Snapshot, id: EntityId) -> Vec<Step> {
             } else {
                 relation.from
             };
-            if neighbour_id == id {
+            if neighbour_id == id || is_lineage(snapshot, id, neighbour_id) {
                 continue;
             }
             let Some(neighbour) = snapshot.entity(neighbour_id) else {
@@ -294,6 +387,16 @@ pub fn side_steps(snapshot: &Snapshot, id: EntityId) -> Vec<Step> {
 
     out.sort_by(|a, b| a.label.cmp(b.label).then(a.name.cmp(&b.name)));
     out
+}
+
+/// Вложены ли объекты друг в друга по дереву владения.
+///
+/// Предок и потомок — не соседи по диску: корень cgroup содержит весь
+/// поток `system.slice`, а `docker.service` — его часть. На stage-1 оба
+/// попадали в «shares» и в зацепки, то есть объект указывал на самого себя.
+#[must_use]
+pub fn is_lineage(snapshot: &Snapshot, a: EntityId, b: EntityId) -> bool {
+    snapshot.ancestry(a).contains(&b) || snapshot.ancestry(b).contains(&a)
 }
 
 /// Идёт ли через объект дисковый поток прямо сейчас.
@@ -414,6 +517,13 @@ mod tests {
             EntitySpec::new(EntityKey::Cgroup { cgroup_id: 30 }, "cron.service").parent(host),
         );
         graph.relate(idle_cgroup, RelationKind::BackedBy, disk);
+        // Вложенная cgroup самого сервиса тоже пишет на этот диск: она часть
+        // объекта, а не сосед, и в «shares» попадать не должна.
+        let nested = graph.upsert(
+            EntitySpec::new(EntityKey::Cgroup { cgroup_id: 40 }, "docker-worker.scope")
+                .parent(cgroup),
+        );
+        graph.relate(nested, RelationKind::BackedBy, disk);
 
         let _ = graph.end_tick();
         let mut latest = LatestValues::new();
@@ -424,6 +534,10 @@ mod tests {
         latest.set(
             pulse_core::SeriesKey::new(idle_cgroup, ids::CG_IO_WRITE_THROUGHPUT),
             0.0,
+        );
+        latest.set(
+            pulse_core::SeriesKey::new(nested, ids::CG_IO_WRITE_THROUGHPUT),
+            8_192.0,
         );
         let snapshot = Snapshot::build(
             &graph,
@@ -543,6 +657,63 @@ mod tests {
             !drill.contains(&"shares"),
             "но не как звено цепочки: {drill:?}"
         );
+    }
+
+    /// Живой кадр stage-1: INSIDE у `docker.service` показывал одну строку
+    /// `dockerd` за девять процессов — свои части сервиса свернулись в него
+    /// самого. Спуск в сервис обязан дать выбрать процесс.
+    #[test]
+    fn descending_into_a_service_lists_its_processes_one_by_one() {
+        let mut graph = EntityGraph::new("boot", "host", Timestamp::from_millis(1_000));
+        graph.begin_tick(Timestamp::from_millis(2_000));
+        let host = graph.host();
+        let cgroup = graph.upsert(
+            EntitySpec::new(EntityKey::Cgroup { cgroup_id: 10 }, "docker.service").parent(host),
+        );
+        let unit = graph.upsert(
+            EntitySpec::new(
+                EntityKey::Unit {
+                    name: "docker.service".into(),
+                },
+                "docker.service",
+            )
+            .parent(cgroup),
+        );
+        graph.relate(cgroup, RelationKind::OwnedBy, unit);
+        for (pid, name) in [
+            (100, "dockerd"),
+            (101, "containerd-shim"),
+            (102, "docker-proxy"),
+        ] {
+            let _ = graph.upsert(
+                EntitySpec::new(
+                    EntityKey::Process {
+                        pid,
+                        start_ticks: 5,
+                    },
+                    name,
+                )
+                .parent(cgroup),
+            );
+        }
+        let _ = graph.end_tick();
+        let snapshot = Snapshot::build(
+            &graph,
+            LatestValues::new(),
+            vec![],
+            vec![],
+            AgentStats::default(),
+            "host",
+            "boot",
+        );
+        for subject in [unit, cgroup] {
+            let mut names: Vec<String> = descend(&snapshot, subject)
+                .into_iter()
+                .map(|row| row.name)
+                .collect();
+            names.sort();
+            assert_eq!(names, vec!["containerd-shim", "docker-proxy", "dockerd"]);
+        }
     }
 
     /// `owner` — только unit, контейнер или pod. Каталог cgroup выше по

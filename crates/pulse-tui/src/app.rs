@@ -210,6 +210,37 @@ impl Default for TimelineState {
 /// обязаны совпадать, поэтому отдельной структуры у экранов нет.
 pub use crate::investigate::Step as RelationTarget;
 
+/// Какой список инспектора получает `Enter`.
+///
+/// Три вопроса следователя — три списка: из чего объект состоит (цепочка),
+/// где в нём интересное (зацепки), кто рядом (связи). `Tab` идёт по кругу.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InspectorList {
+    Chain,
+    Leads,
+    Related,
+}
+
+impl InspectorList {
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Chain => Self::Leads,
+            Self::Leads => Self::Related,
+            Self::Related => Self::Chain,
+        }
+    }
+
+    #[must_use]
+    pub const fn previous(self) -> Self {
+        match self {
+            Self::Chain => Self::Related,
+            Self::Leads => Self::Chain,
+            Self::Related => Self::Leads,
+        }
+    }
+}
+
 /// Contextual Inspector session (разделы 168, 174, 175, 196).
 #[derive(Clone, Debug)]
 pub struct InspectorSession {
@@ -220,8 +251,8 @@ pub struct InspectorSession {
     pub current: EntityKey,
     pub relation_selected: usize,
     pub relation_len: usize,
-    /// `Enter` действует на боковые переходы, а не на цепочку вниз.
-    pub side_active: bool,
+    /// Список, по которому ходит курсор и который получает `Enter`.
+    pub list: InspectorList,
 }
 
 impl InspectorSession {
@@ -233,7 +264,7 @@ impl InspectorSession {
             current,
             relation_selected: 0,
             relation_len: 0,
-            side_active: false,
+            list: InspectorList::Chain,
         }
     }
 
@@ -246,6 +277,7 @@ impl InspectorSession {
         }
         self.current = target;
         self.relation_selected = 0;
+        self.list = InspectorList::Chain;
     }
 
     /// Боковой переход: новое расследование с нового корня.
@@ -257,7 +289,7 @@ impl InspectorSession {
         self.path = vec![target.clone()];
         self.current = target;
         self.relation_selected = 0;
-        self.side_active = false;
+        self.list = InspectorList::Chain;
     }
 
     /// Назад по уникальному relation path.
@@ -270,6 +302,7 @@ impl InspectorSession {
             self.current = previous;
         }
         self.relation_selected = 0;
+        self.list = InspectorList::Chain;
         true
     }
 }
@@ -678,11 +711,11 @@ impl App {
 
     /// Видимые отношения текущей сущности. Renderer и Enter используют этот
     /// же список, поэтому background target невозможен.
-    pub fn inspector_relations(&self, snapshot: &Snapshot) -> Vec<RelationTarget> {
+    pub fn inspector_relations(&self, snapshot: &Snapshot) -> Vec<crate::investigate::Descent> {
         let Some(entity) = self.inspector_entity(snapshot) else {
             return Vec::new();
         };
-        relation_targets_for(snapshot, entity.id)
+        crate::investigate::descend(snapshot, entity.id)
     }
 
     /// Боковые переходы текущей сущности: владелец и соседи по ресурсу.
@@ -694,6 +727,14 @@ impl App {
             return Vec::new();
         };
         crate::investigate::side_steps(snapshot, entity.id)
+    }
+
+    /// Зацепки текущего объекта. Renderer и router читают именно этот метод.
+    pub fn inspector_leads(&self, snapshot: &Snapshot) -> Vec<crate::leads::Lead> {
+        let Some(entity) = self.inspector_entity(snapshot) else {
+            return Vec::new();
+        };
+        crate::leads::leads(snapshot, entity.id, crate::leads::LEADS_SHOWN)
     }
 
     fn inspector_back(&mut self) {
@@ -885,40 +926,76 @@ impl App {
                 Some(Action::None)
             }
             KeyCode::Enter => {
-                let side = self
+                let list = self
                     .inspector
                     .as_ref()
-                    .is_some_and(|inspector| inspector.side_active);
-                let targets = if side {
-                    self.inspector_side_steps(snapshot)
-                } else {
-                    self.inspector_relations(snapshot)
-                };
+                    .map_or(InspectorList::Chain, |inspector| inspector.list);
                 let selected = self
                     .inspector
                     .as_ref()
                     .map_or(0, |inspector| inspector.relation_selected);
-                if let Some(target) = targets.get(selected) {
-                    if let Some(inspector) = &mut self.inspector {
-                        if side {
-                            // Боковой переход — не продолжение цепочки: он
-                            // начинает новое расследование с нового корня,
-                            // иначе путь смешал бы «спустился» и «прыгнул».
-                            inspector.restart(target.key.clone());
-                        } else {
-                            inspector.follow(target.key.clone());
-                        }
-                    }
-                } else {
-                    self.status = "nothing to open".to_string();
+                let target = match list {
+                    InspectorList::Chain => self
+                        .inspector_relations(snapshot)
+                        .get(selected)
+                        .map(|step| step.key.clone()),
+                    InspectorList::Related => self
+                        .inspector_side_steps(snapshot)
+                        .get(selected)
+                        .map(|step| step.key.clone()),
+                    InspectorList::Leads => self
+                        .inspector_leads(snapshot)
+                        .get(selected)
+                        .map(|lead| lead.key.clone()),
+                };
+                match (target, &mut self.inspector) {
+                    (Some(target), Some(inspector)) => match list {
+                        // Боковой переход — не продолжение цепочки: он
+                        // начинает новое расследование с нового корня,
+                        // иначе путь смешал бы «спустился» и «прыгнул».
+                        InspectorList::Related => inspector.restart(target),
+                        // Зацепка продолжает дело: путь — это след
+                        // расследования, и Esc возвращает к месту, откуда
+                        // за ней пошли.
+                        InspectorList::Chain | InspectorList::Leads => inspector.follow(target),
+                    },
+                    _ => self.status = "nothing to open".to_string(),
                 }
                 Some(Action::None)
             }
-            // Tab переключает, какой список получает `Enter`: цепочка вниз или
-            // боковые переходы. Один ключ вместо второго набора клавиш.
+            // Tab переключает, какой список получает `Enter`. Один ключ вместо
+            // второго набора клавиш. Пустой список пропускается: фокус на
+            // «no leads» — это нажатие Enter в пустоту.
             KeyCode::Tab | KeyCode::BackTab => {
+                let lens = [
+                    (
+                        InspectorList::Chain,
+                        self.inspector_relations(snapshot).len(),
+                    ),
+                    (InspectorList::Leads, self.inspector_leads(snapshot).len()),
+                    (
+                        InspectorList::Related,
+                        self.inspector_side_steps(snapshot).len(),
+                    ),
+                ];
+                let len_of = |list: InspectorList| {
+                    lens.iter()
+                        .find(|(candidate, _)| *candidate == list)
+                        .map_or(0, |(_, len)| *len)
+                };
                 if let Some(inspector) = &mut self.inspector {
-                    inspector.side_active = !inspector.side_active;
+                    let mut list = inspector.list;
+                    for _ in 0..3 {
+                        list = if key.code == KeyCode::Tab {
+                            list.next()
+                        } else {
+                            list.previous()
+                        };
+                        if len_of(list) > 0 {
+                            break;
+                        }
+                    }
+                    inspector.list = list;
                     inspector.relation_selected = 0;
                 }
                 Some(Action::None)
