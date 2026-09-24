@@ -20,6 +20,7 @@
 //!   продолжение цепочки: он начинает новое расследование с нового корня.
 
 use pulse_core::entity::{EntityKey, EntityKind};
+use pulse_core::metric::ids;
 use pulse_core::snapshot::Snapshot;
 use pulse_core::{EntityId, RelationKind};
 
@@ -229,9 +230,21 @@ pub fn side_steps(snapshot: &Snapshot, id: EntityId) -> Vec<Step> {
     if let Some(parent) = entity.parent.and_then(|parent| snapshot.entity(parent)) {
         let parent_level = Level::of(parent.kind);
         if !parent_level.is_resource() && parent_level.depth() <= current.depth() {
+            // `owner` в PULSE — это unit, контейнер или pod (колонка OWNER).
+            // Каталог cgroup выше по дереву лишь содержит объект: на stage-1
+            // у `system.slice` значилось «owner root», то есть корень хоста
+            // выдавался за владельца слайса.
+            let label = if matches!(
+                parent.kind,
+                EntityKind::Unit | EntityKind::Container | EntityKind::Pod
+            ) {
+                "owner"
+            } else {
+                "parent"
+            };
             push_labelled(
                 &mut out,
-                "owner",
+                label,
                 parent.key.clone(),
                 &parent.name,
                 parent.kind,
@@ -239,7 +252,12 @@ pub fn side_steps(snapshot: &Snapshot, id: EntityId) -> Vec<Step> {
         }
     }
 
-    // Соседи по общему ресурсу: «кто ещё пользуется этим диском».
+    // Соседи по общему ресурсу: «кто ещё сейчас нагружает этот диск».
+    //
+    // Только с измеренным дисковым потоком больше нуля. Одна общая связь
+    // `BackedBy` на хосте с двумя дисками связывает почти всё: на stage-1
+    // это было «shares 244 × cgroup» — список без ответа. Активный сосед —
+    // первый кандидат, когда задержка диска растёт.
     for resource in context_resources(snapshot, id) {
         let Some(resource_id) = snapshot
             .entities
@@ -261,7 +279,7 @@ pub fn side_steps(snapshot: &Snapshot, id: EntityId) -> Vec<Step> {
             let Some(neighbour) = snapshot.entity(neighbour_id) else {
                 continue;
             };
-            if Level::of(neighbour.kind) != current {
+            if Level::of(neighbour.kind) != current || !is_doing_io(snapshot, neighbour.id) {
                 continue;
             }
             push_labelled(
@@ -276,6 +294,12 @@ pub fn side_steps(snapshot: &Snapshot, id: EntityId) -> Vec<Step> {
 
     out.sort_by(|a, b| a.label.cmp(b.label).then(a.name.cmp(&b.name)));
     out
+}
+
+/// Идёт ли через объект дисковый поток прямо сейчас.
+fn is_doing_io(snapshot: &Snapshot, id: EntityId) -> bool {
+    let rate = |metric| snapshot.value(id, metric).unwrap_or(0.0);
+    rate(ids::CG_IO_READ_THROUGHPUT) + rate(ids::CG_IO_WRITE_THROUGHPUT) > 0.0
 }
 
 /// Добавляет звено цепочки, сворачивая однотипные объекты.
@@ -379,16 +403,31 @@ mod tests {
         );
         graph.relate(process, RelationKind::RunsIn, cgroup);
 
-        // Второй сервис на том же диске: сосед, а не звено цепочки.
+        // Второй сервис на том же диске и сейчас пишет: сосед, а не звено
+        // цепочки. Третий на том же диске простаивает — он не ответ на вопрос
+        // «кто ещё нагружает диск».
         let other_cgroup = graph.upsert(
             EntitySpec::new(EntityKey::Cgroup { cgroup_id: 20 }, "postgres.service").parent(host),
         );
         graph.relate(other_cgroup, RelationKind::BackedBy, disk);
+        let idle_cgroup = graph.upsert(
+            EntitySpec::new(EntityKey::Cgroup { cgroup_id: 30 }, "cron.service").parent(host),
+        );
+        graph.relate(idle_cgroup, RelationKind::BackedBy, disk);
 
         let _ = graph.end_tick();
+        let mut latest = LatestValues::new();
+        latest.set(
+            pulse_core::SeriesKey::new(other_cgroup, ids::CG_IO_WRITE_THROUGHPUT),
+            4_096.0,
+        );
+        latest.set(
+            pulse_core::SeriesKey::new(idle_cgroup, ids::CG_IO_WRITE_THROUGHPUT),
+            0.0,
+        );
         let snapshot = Snapshot::build(
             &graph,
-            LatestValues::new(),
+            latest,
             vec![],
             vec![],
             AgentStats::default(),
@@ -485,13 +524,16 @@ mod tests {
     #[test]
     fn side_steps_offer_neighbours_but_are_not_the_chain() {
         let (snapshot, _, cgroup, _) = snapshot();
-        let side: Vec<&str> = side_steps(&snapshot, cgroup)
+        let side = side_steps(&snapshot, cgroup);
+        let shares: Vec<&str> = side
             .iter()
-            .map(|step| step.label)
+            .filter(|step| step.label == "shares")
+            .map(|step| step.name.as_str())
             .collect();
-        assert!(
-            side.contains(&"shares"),
-            "сосед по диску доступен как боковой переход: {side:?}"
+        assert_eq!(
+            shares,
+            vec!["postgres.service"],
+            "в соседях только тот, кто сейчас нагружает общий диск: {side:?}"
         );
         let drill: Vec<&str> = drill_steps(&snapshot, cgroup)
             .iter()
@@ -501,6 +543,36 @@ mod tests {
             !drill.contains(&"shares"),
             "но не как звено цепочки: {drill:?}"
         );
+    }
+
+    /// `owner` — только unit, контейнер или pod. Каталог cgroup выше по
+    /// дереву лишь содержит объект: на stage-1 `system.slice` показывал
+    /// «owner root».
+    #[test]
+    fn containing_cgroup_is_a_parent_not_an_owner() {
+        let mut graph = EntityGraph::new("boot", "host", Timestamp::from_millis(1_000));
+        graph.begin_tick(Timestamp::from_millis(2_000));
+        let host = graph.host();
+        let root =
+            graph.upsert(EntitySpec::new(EntityKey::Cgroup { cgroup_id: 1 }, "root").parent(host));
+        let slice = graph.upsert(
+            EntitySpec::new(EntityKey::Cgroup { cgroup_id: 2 }, "system.slice").parent(root),
+        );
+        let _ = graph.end_tick();
+        let snapshot = Snapshot::build(
+            &graph,
+            LatestValues::new(),
+            vec![],
+            vec![],
+            AgentStats::default(),
+            "host",
+            "boot",
+        );
+        let labels: Vec<(&str, String)> = side_steps(&snapshot, slice)
+            .into_iter()
+            .map(|step| (step.label, step.name))
+            .collect();
+        assert_eq!(labels, vec![("parent", "root".to_string())]);
     }
 
     #[test]

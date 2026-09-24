@@ -2272,13 +2272,14 @@ fn side_jump_restarts_the_investigation() {
     follow_to(&mut app, &snapshot, &b);
     assert_eq!(app.inspector.as_ref().map(|s| s.path.len()), Some(2));
 
-    // Владелец доступен только как боковой переход: вверх ведёт Esc,
-    // а Enter по цепочке идёт вниз.
+    // Родитель доступен только как боковой переход: вверх ведёт Esc,
+    // а Enter по цепочке идёт вниз. A и B — cgroup, поэтому это `parent`,
+    // а не `owner`.
     let side = app.inspector_side_steps(&snapshot);
     let owner = side
         .iter()
-        .position(|step| step.label == "owner")
-        .expect("владелец в боковых переходах");
+        .position(|step| step.label == "parent")
+        .expect("родитель в боковых переходах");
     if let Some(session) = &mut app.inspector {
         session.side_active = true;
         session.relation_selected = owner;
