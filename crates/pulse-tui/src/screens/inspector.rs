@@ -491,8 +491,14 @@ fn share_bar(ratio: f64, cells: usize, theme: &Theme) -> Vec<Span<'static>> {
             theme.glyphs.bar_full.to_string().repeat(filled),
             theme.text(),
         ),
+        // Пустое — тихой точкой, а не `░`: у двухсот объектов с нулевой долей
+        // штриховка складывалась в серую стену, а ноль должен быть тишиной.
         Span::styled(
-            theme.glyphs.bar_empty.to_string().repeat(cells - filled),
+            if matches!(theme.capability, Capability::Ascii) {
+                ".".repeat(cells - filled)
+            } else {
+                "·".repeat(cells - filled)
+            },
             theme.faint(),
         ),
     ]
@@ -644,12 +650,12 @@ fn inside_block(case: &Case<'_>, rows: &[Descent], width: u16, room: usize) -> V
     }
 
     let total = measured_row(case.snapshot, case.entity);
-    // У unit сам объект CPU не несёт: он дублирует метрику своей cgroup.
-    let whole = if total.cpu > 0.0 {
-        total.cpu
-    } else {
-        rows.iter().map(|row| row.cpu).sum()
-    };
+    // Знаменатель — большее из CPU объекта и суммы частей. CPU cgroup и CPU
+    // процессов меряются разными выборками, и за такт сумма частей бывает
+    // больше целого: на кадре `pulse` показывал 100 % при 0.02c из 0.01c.
+    // Доля обязана оставаться долей.
+    let parts: f64 = rows.iter().map(|row| row.cpu).sum();
+    let whole = total.cpu.max(parts);
     let visible = room.saturating_sub(2).max(3);
     let cursor = if case.focus == InspectorList::Chain {
         case.selected
