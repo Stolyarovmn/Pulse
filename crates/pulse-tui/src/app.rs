@@ -110,12 +110,36 @@ pub enum Action {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Overlay {
     Search(SearchOverlay),
-    Palette {
-        query: String,
-    },
-    Help,
+    /// Палитра команд или справка: один список действий (`crate::palette`).
+    Palette(PaletteState),
     /// Пайп расследования: факты о выбранной сущности.
     Pipe(crate::pipe::PipeState),
+}
+
+/// Состояние палитры: запрос, выбранная строка и режим справки.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PaletteState {
+    pub query: String,
+    pub selected: usize,
+    /// Справка (`?`): команды всех мест, а не только текущего.
+    pub help: bool,
+}
+
+impl PaletteState {
+    /// Палитра текущего места (`:`).
+    #[must_use]
+    pub fn commands() -> Self {
+        Self::default()
+    }
+
+    /// Справка (`?`, `F1`).
+    #[must_use]
+    pub fn help() -> Self {
+        Self {
+            help: true,
+            ..Self::default()
+        }
+    }
 }
 
 /// Состояние Search modal и точка точного возврата по Esc (разделы 177, 178).
@@ -488,9 +512,9 @@ impl App {
     #[must_use]
     pub const fn title(&self) -> &'static str {
         match self.overlay {
-            Some(Overlay::Help) => "HELP",
+            Some(Overlay::Palette(PaletteState { help: true, .. })) => "HELP",
             Some(Overlay::Search(_)) => "SEARCH",
-            Some(Overlay::Palette { .. }) => "COMMANDS",
+            Some(Overlay::Palette(_)) => "COMMANDS",
             Some(Overlay::Pipe(_)) => "PIPE",
             None if self.inspector.is_some() => "INSPECTOR",
             None => self.screen.title(),
@@ -535,11 +559,47 @@ impl App {
         }
     }
 
+    /// Место, в котором сейчас открылась бы палитра.
     #[must_use]
-    pub fn palette_query(&self) -> Option<&str> {
-        match &self.overlay {
-            Some(Overlay::Palette { query }) => Some(query.as_str()),
-            _ => None,
+    pub fn place(&self) -> crate::palette::Place {
+        if self.inspector.is_some() {
+            crate::palette::Place::Inspector
+        } else {
+            crate::palette::Place::Screen(self.screen)
+        }
+    }
+
+    /// Выполняет команду палитры тем же путём, что и клавиатура.
+    ///
+    /// Команда чужого экрана (из справки) сначала переводит на свой экран:
+    /// иначе клавиша ушла бы в экран, где она ничего не значит.
+    fn run_command(&mut self, command: &crate::palette::Command, snapshot: &Snapshot) -> Action {
+        use crate::palette::{Run, Scope};
+        if !self.place().covers(command.scope) {
+            match command.scope {
+                Scope::Screen(screen) => {
+                    self.inspector = None;
+                    self.navigate(screen, snapshot);
+                }
+                Scope::Inspector => {
+                    self.status = "open an entity first: Enter on a row".to_string();
+                    return Action::None;
+                }
+                Scope::Global => {}
+            }
+        }
+        match command.run {
+            Run::Key(code) => self.dispatch(KeyEvent::new(code, KeyModifiers::NONE), snapshot),
+            Run::RawEvents => {
+                self.raw_events_on();
+                Action::None
+            }
+            Run::Story => {
+                self.timeline.raw_events = false;
+                self.screen = Screen::Timeline;
+                self.status = "story view".to_string();
+                Action::None
+            }
         }
     }
 
@@ -779,11 +839,47 @@ impl App {
             return Action::None;
         };
         match overlay {
-            Overlay::Help => {
-                if matches!(key.code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::F(1)) {
-                    self.overlay = None;
-                } else {
-                    self.overlay = Some(Overlay::Help);
+            Overlay::Palette(mut state) => {
+                let listed = crate::palette::listed(self.place(), state.help, &state.query);
+                let last = listed.len().saturating_sub(1);
+                match key.code {
+                    KeyCode::Esc => self.status.clear(),
+                    // Справка закрывается той же клавишей, что открыла её.
+                    KeyCode::F(1) if state.help => {}
+                    KeyCode::Char('?') if state.help && state.query.is_empty() => {}
+                    KeyCode::Up => {
+                        state.selected = state.selected.saturating_sub(1);
+                        self.overlay = Some(Overlay::Palette(state));
+                    }
+                    KeyCode::Down => {
+                        state.selected = (state.selected + 1).min(last);
+                        self.overlay = Some(Overlay::Palette(state));
+                    }
+                    KeyCode::PageUp => {
+                        state.selected = state.selected.saturating_sub(10);
+                        self.overlay = Some(Overlay::Palette(state));
+                    }
+                    KeyCode::PageDown => {
+                        state.selected = (state.selected + 10).min(last);
+                        self.overlay = Some(Overlay::Palette(state));
+                    }
+                    KeyCode::Enter => match listed.get(state.selected.min(last)) {
+                        Some(command) => return self.run_command(command, snapshot),
+                        None => {
+                            self.status = format!("no command matches \"{}\"", state.query);
+                        }
+                    },
+                    KeyCode::Backspace => {
+                        let _ = state.query.pop();
+                        state.selected = 0;
+                        self.overlay = Some(Overlay::Palette(state));
+                    }
+                    KeyCode::Char(c) => {
+                        state.query.push(c);
+                        state.selected = 0;
+                        self.overlay = Some(Overlay::Palette(state));
+                    }
+                    _ => self.overlay = Some(Overlay::Palette(state)),
                 }
             }
             Overlay::Pipe(mut state) => {
@@ -832,38 +928,6 @@ impl App {
                     _ => self.overlay = Some(Overlay::Pipe(state)),
                 }
             }
-            Overlay::Palette { mut query } => match key.code {
-                KeyCode::Esc => self.status.clear(),
-                KeyCode::Enter => {
-                    // Единственная реализованная команда: raw events как
-                    // secondary Timeline subview (§183). Остальные честно
-                    // сообщают, что их нет в этой сборке.
-                    let command = query.trim().to_ascii_lowercase();
-                    match command.as_str() {
-                        "raw events" | "raw" => {
-                            self.raw_events_on();
-                        }
-                        "story" | "events" => {
-                            self.timeline.raw_events = false;
-                            self.screen = Screen::Timeline;
-                            self.status = "story view".to_string();
-                        }
-                        _ => {
-                            self.status =
-                                format!("command \"{command}\" is not available in this build");
-                        }
-                    }
-                }
-                KeyCode::Backspace => {
-                    let _ = query.pop();
-                    self.overlay = Some(Overlay::Palette { query });
-                }
-                KeyCode::Char(c) => {
-                    query.push(c);
-                    self.overlay = Some(Overlay::Palette { query });
-                }
-                _ => self.overlay = Some(Overlay::Palette { query }),
-            },
             Overlay::Search(mut search) => match key.code {
                 KeyCode::Esc => {
                     self.screen = search.previous_screen;
@@ -1111,13 +1175,11 @@ impl App {
                 Action::None
             }
             KeyCode::Char(':') => {
-                self.overlay = Some(Overlay::Palette {
-                    query: String::new(),
-                });
+                self.overlay = Some(Overlay::Palette(PaletteState::commands()));
                 Action::None
             }
             KeyCode::Char('?') | KeyCode::F(1) => {
-                self.overlay = Some(Overlay::Help);
+                self.overlay = Some(Overlay::Palette(PaletteState::help()));
                 Action::None
             }
             KeyCode::Char('g') => {

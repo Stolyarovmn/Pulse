@@ -9,9 +9,9 @@
 
 mod acceptance;
 pub mod entities;
-pub mod help;
 pub mod inspector;
 pub mod overview;
+pub mod palette;
 pub mod pipe;
 pub mod problems;
 pub mod timeline;
@@ -89,11 +89,6 @@ pub fn render(
     render_header_rule(frame, rect(&chunks, 1), theme);
     render_footer(frame, rect(&chunks, 3), snapshot, app, &plan, theme);
 
-    if matches!(app.overlay, Some(Overlay::Help)) {
-        help::render(frame, body, &plan, theme);
-        return;
-    }
-
     if let Some(Overlay::Pipe(state)) = app.overlay.clone() {
         pipe::render(frame, body, snapshot, app, &state, &plan, theme);
         return;
@@ -116,8 +111,10 @@ pub fn render(
         }
     }
 
-    if app.overlay.is_some() {
-        render_input_overlay(frame, body, snapshot, app, theme);
+    match app.overlay.clone() {
+        Some(Overlay::Palette(state)) => palette::render(frame, body, app, &state, theme),
+        Some(Overlay::Search(_)) => render_input_overlay(frame, body, snapshot, app, theme),
+        _ => {}
     }
 }
 
@@ -162,7 +159,7 @@ fn visible_panes(
     }
 }
 
-/// Видимый Search/Palette modal. underlying screen уже отрисован, но router
+/// Видимый Search modal. underlying screen уже отрисован, но router
 /// полностью блокирует его ввод (разделы 177-179).
 fn render_input_overlay(
     frame: &mut Frame<'_>,
@@ -187,11 +184,6 @@ fn render_input_overlay(
                 format!("{matches} matches   Enter apply/open   Esc cancel"),
             )
         }
-        Some(Overlay::Palette { query }) => (
-            " COMMANDS ",
-            format!(": {query}█"),
-            "Enter run   Esc cancel".to_string(),
-        ),
         _ => return,
     };
     let block = Block::default()
@@ -362,7 +354,7 @@ fn render_footer(
     theme: &Theme,
 ) {
     let hints = ui::footer_line(plan.footer, area.width, theme.capability, app.icons);
-    let mut spans = vec![Span::styled(hints.clone(), theme.dim())];
+    let mut spans = footer_spans(&hints, active_marker(app), theme);
     if app.show_self_metrics {
         let self_cost = self_metrics_text(snapshot);
         let used =
@@ -374,6 +366,49 @@ fn render_footer(
         }
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Клавиша места, в котором сейчас оператор: экран или открытый оверлей.
+///
+/// Инспектор — контекст поверх экрана, из которого его открыли, поэтому
+/// подсвечен экран происхождения: `Esc` вернёт именно туда.
+fn active_marker(app: &App) -> &'static str {
+    match &app.overlay {
+        Some(Overlay::Palette(state)) if state.help => "[?]",
+        Some(Overlay::Palette(_)) => "[:]",
+        Some(Overlay::Search(_)) => "[/]",
+        _ => match app.screen {
+            Screen::Overview => "[1]",
+            Screen::Problems => "[2]",
+            Screen::Entities => "[3]",
+            Screen::Timeline => "[4]",
+        },
+    }
+}
+
+/// Легенда футера: пункт текущего места — плашкой цвета места, клавиши —
+/// акцентом, подписи — приглушённо. Ширина строки не меняется: плашка — это
+/// фон, а не лишние символы.
+fn footer_spans(hints: &str, active: &str, theme: &Theme) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for (index, item) in hints.split("  ").enumerate() {
+        if index > 0 {
+            spans.push(Span::styled("  ", theme.dim()));
+        }
+        if item.contains(active) {
+            spans.push(Span::styled(item.to_string(), theme.accent_chip()));
+            continue;
+        }
+        match item.find(']') {
+            Some(end) if item.contains('[') => {
+                let (keys, label) = item.split_at(end + 1);
+                spans.push(Span::styled(keys.to_string(), theme.accent()));
+                spans.push(Span::styled(label.to_string(), theme.dim()));
+            }
+            _ => spans.push(Span::styled(item.to_string(), theme.dim())),
+        }
+    }
+    spans
 }
 
 /// Стоимость агента одной строкой.

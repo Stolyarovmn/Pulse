@@ -891,6 +891,80 @@ fn inspector_never_renders_empty_top_level_page() {
     assert_eq!(app.screen, Screen::Timeline, "4 is Timeline, not Inspector");
 }
 
+/// Место оператора видно в футере плашкой цвета места: экран, а поверх
+/// него — открытая палитра. Ровно один пункт выделен, и это не лишние
+/// символы, а фон: текст футера не меняется.
+#[test]
+fn footer_marks_where_the_operator_is() {
+    let snapshot = healthy();
+    let theme = Theme::with_capability(Capability::TrueColor);
+    let chip = theme.accent_chip().bg;
+    let marked = |app: &mut App| -> String {
+        let mut terminal = Terminal::new(TestBackend::new(180, 40)).expect("terminal");
+        terminal
+            .draw(|frame| super::render(frame, &snapshot, app, &theme, None))
+            .expect("render");
+        let buffer = terminal.backend().buffer().clone();
+        (0..180)
+            .filter_map(|col| buffer.cell((col, 39)))
+            .filter(|cell| cell.bg == chip.unwrap_or_default())
+            .map(|cell| cell.symbol().to_string())
+            .collect()
+    };
+    let mut app = App::default();
+    app.screen = Screen::Entities;
+    assert_eq!(marked(&mut app), "[3]Entities");
+    let _ = app.dispatch(key(KeyCode::Char(':')), &snapshot);
+    assert_eq!(marked(&mut app), "[:]Commands");
+}
+
+/// Палитра — не поле ввода, а список: стрелка выбирает, `Enter` выполняет
+/// ровно то, что сделала бы клавиша команды. Команда чужого экрана из
+/// справки сначала переводит на свой экран, иначе клавиша ушла бы в пустоту.
+#[test]
+fn palette_runs_the_selected_command_like_its_key() {
+    let snapshot = healthy();
+    let mut app = App::default();
+    app.screen = Screen::Entities;
+    let _ = app.dispatch(key(KeyCode::Char(':')), &snapshot);
+    // Первая команда места — Open selected, вторая — Next sort.
+    let _ = app.dispatch(key(KeyCode::Down), &snapshot);
+    let before = app.entities.sort;
+    let _ = app.dispatch(key(KeyCode::Enter), &snapshot);
+    assert!(app.overlay.is_none(), "палитра закрылась после команды");
+    let mut by_key = App::default();
+    by_key.screen = Screen::Entities;
+    let _ = by_key.dispatch(key(KeyCode::Char('s')), &snapshot);
+    assert_ne!(app.entities.sort, before, "команда сработала");
+    assert_eq!(app.entities.sort, by_key.entities.sort, "как клавиша `s`");
+
+    // Из справки на Overview: «Zoom in» живёт на Timeline.
+    let mut app = App::default();
+    let zoom = app.timeline.zoom_ms;
+    let _ = app.dispatch(key(KeyCode::Char('?')), &snapshot);
+    for ch in "zoom in".chars() {
+        let _ = app.dispatch(key(KeyCode::Char(ch)), &snapshot);
+    }
+    let _ = app.dispatch(key(KeyCode::Enter), &snapshot);
+    assert_eq!(
+        app.screen,
+        Screen::Timeline,
+        "команда перевела на свой экран"
+    );
+    assert!(app.timeline.zoom_ms < zoom, "и выполнилась там");
+
+    // `q` набирается в запрос, а не выходит: палитра владеет вводом.
+    let mut app = App::default();
+    let _ = app.dispatch(key(KeyCode::Char(':')), &snapshot);
+    assert_eq!(
+        app.dispatch(key(KeyCode::Char('q')), &snapshot),
+        Action::None
+    );
+    assert!(matches!(&app.overlay, Some(Overlay::Palette(state)) if state.query == "q"));
+    // А команда Quit выходит.
+    assert_eq!(app.dispatch(key(KeyCode::Enter), &snapshot), Action::Quit);
+}
+
 #[test]
 fn help_is_overlay_and_restores_exact_state() {
     let snapshot = healthy();
@@ -899,12 +973,22 @@ fn help_is_overlay_and_restores_exact_state() {
     app.entities.selected = 2;
     app.pane = Pane::Primary;
     let _ = app.dispatch(key(KeyCode::Char('?')), &snapshot);
-    assert_eq!(app.overlay, Some(Overlay::Help));
+    assert!(
+        matches!(&app.overlay, Some(Overlay::Palette(state)) if state.help),
+        "{:?}",
+        app.overlay
+    );
     let text = joined(120, 30, &snapshot, &mut app);
-    assert!(text.contains("HELP / NAVIGATION"));
-    assert!(text.contains("Shift+Tab"));
-    assert!(text.contains("Timeline / Time Machine"));
-    assert!(!text.contains("1 … 5"));
+    assert!(text.contains("HELP"), "{text}");
+    assert!(text.contains("Timeline / Time Machine"), "{text}");
+    // Справка — это палитра: набор фильтрует, и команда из другого места
+    // находится по клавише.
+    for ch in "shift".chars() {
+        let _ = app.dispatch(key(KeyCode::Char(ch)), &snapshot);
+    }
+    let text = joined(120, 30, &snapshot, &mut app);
+    assert!(text.contains("Shift+Tab"), "{text}");
+    assert!(!text.contains("Timeline / Time Machine"), "{text}");
     let _ = app.dispatch(key(KeyCode::Esc), &snapshot);
     assert!(app.overlay.is_none());
     assert_eq!(app.screen, Screen::Entities);

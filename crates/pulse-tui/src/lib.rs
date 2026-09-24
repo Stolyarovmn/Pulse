@@ -29,6 +29,7 @@ pub mod icons;
 pub mod investigate;
 pub mod layout;
 pub mod leads;
+pub mod palette;
 pub mod pipe;
 pub mod rows;
 pub mod screens;
