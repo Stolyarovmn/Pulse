@@ -32,6 +32,7 @@ use crate::glyph::GlyphSurface;
 use crate::layout::{bounded, BlockKind, LayoutPlan, OverviewComposition, Priority};
 use crate::state::StateGlyph;
 use crate::theme::{Capability, Theme};
+use crate::ui;
 
 use super::{focused_section, observation, rect, section, vitals_line};
 
@@ -120,18 +121,10 @@ pub(crate) fn render(
                 Constraint::Min(0),
             ])
             .split(head);
-        render_state(
-            frame,
-            rect(&halves, 0),
-            snapshot,
-            &glyph,
-            &surface,
-            plan,
-            theme,
-        );
+        render_state(frame, rect(&halves, 0), &glyph, &surface, plan, theme);
         render_attention(frame, rect(&halves, 2), &attention, plan, theme);
     } else {
-        render_state(frame, head, snapshot, &glyph, &surface, plan, theme);
+        render_state(frame, head, &glyph, &surface, plan, theme);
         let block = rect(&chunks, slot);
         slot += 1;
         render_attention(frame, block, &attention, plan, theme);
@@ -233,7 +226,6 @@ pub(crate) fn render(
 fn render_state(
     frame: &mut Frame<'_>,
     area: Rect,
-    snapshot: &Snapshot,
     glyph: &StateGlyph,
     surface: &GlyphSurface,
     plan: &LayoutPlan,
@@ -245,19 +237,26 @@ fn render_state(
 
     lines.push(Line::from(""));
     let overall = glyph.overall();
+    let verdict_style = if !glyph.has_data() {
+        theme.dim()
+    } else if overall.is_abnormal() || overall == crate::state::StateClass::Saturated {
+        overall.style(theme)
+    } else {
+        theme.nominal()
+    };
     lines.push(Line::from(Span::styled(
         glyph.verdict().to_string(),
-        overall.style(theme),
+        verdict_style,
     )));
-    // §163 запрещает дублировать «0 problems», а §190 показывает в панели
-    // состояния только фигуру и вердикт. Счётчик уместен лишь тогда, когда
-    // он несёт число, которого нет ни в шапке, ни в ATTENTION.
-    if plan.shows(Priority::P2) && !snapshot.problems.is_empty() {
-        let count = snapshot.problems.len();
+    // Пояснение вместо счётчика проблем: число уже есть в шапке (`▲1`) и в
+    // ATTENTION (§163), а куда клонится масса фигуры — нигде. Стрелка
+    // совпадает со стороной фигуры, где живёт сектор.
+    if plan.shows(Priority::P2) {
         lines.push(Line::from(Span::styled(
-            format!(
-                "{count} active problem{}",
-                if count == 1 { "" } else { "s" }
+            ui::truncate(
+                &glyph.verdict_detail(theme.capability),
+                usize::from(area.width),
+                theme.capability,
             ),
             theme.dim(),
         )));

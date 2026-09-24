@@ -198,6 +198,14 @@ impl Theme {
         Style::default().fg(color).add_modifier(Modifier::BOLD)
     }
 
+    /// Частичная деградация: янтарный, между насыщением и предупреждением.
+    #[must_use]
+    pub fn degraded(&self) -> Style {
+        Style::default()
+            .fg(self.pick((220, 150, 88), 173, Color::Yellow))
+            .add_modifier(Modifier::BOLD)
+    }
+
     /// Цвет для доли: спокойный до 0.7, предупреждение до 0.9, дальше критично.
     #[must_use]
     pub fn ratio(&self, value: f64) -> Style {

@@ -661,10 +661,10 @@ fn state_glyph_legend_maps_sectors_to_their_classes() {
         assert!(symbol.is_some(), "нет подписи {calm}:\n{text}");
         assert_ne!(symbol, Some(critical_symbol), "{calm} не критичен:\n{text}");
     }
+    // Счётчик проблем уже есть в шапке (`▲1`); под вердиктом — пояснение.
     assert!(
-        text.lines()
-            .any(|line| line.trim_end() == "1 active problem"),
-        "счётчик в единственном числе:\n{text}"
+        text.contains("critical state · centered"),
+        "пояснение к вердикту:\n{text}"
     );
 }
 

@@ -143,7 +143,10 @@ impl StateClass {
             // Штатная активная масса: спокойный цвет, а не белый акцент.
             StateClass::Active => theme.nominal(),
             // Насыщение требует внимания, но проблемой ещё не является.
-            StateClass::Saturated | StateClass::Degraded => theme.severity(Severity::Info),
+            StateClass::Saturated => theme.severity(Severity::Info),
+            // Частичная деградация — свой, янтарный тон: иначе её не
+            // отличить от насыщения по цвету.
+            StateClass::Degraded => theme.degraded(),
             StateClass::Warning => theme.severity(Severity::Warn),
             StateClass::Critical | StateClass::Failed => theme.severity(Severity::Crit),
         }
@@ -229,6 +232,12 @@ pub struct StateGlyph {
     /// на простаивающем хосте залитый диск утверждал бы активность, которой
     /// нет. Класс отвечает за severity, нагрузка - за площадь.
     load: SectorLoad,
+    /// Есть ли вообще измерения хоста.
+    ///
+    /// До первого такта долей нет, и фигура без этого признака рисовала
+    /// спокойный силуэт с вердиктом «SYSTEM NOMINAL» — утверждение о хосте,
+    /// которого PULSE ещё не видел.
+    data: bool,
 }
 
 /// Нагрузка подсистем 0..1.
@@ -296,6 +305,7 @@ impl StateGlyph {
             net: Self::from_metrics(&[]),
             core: StateClass::Normal,
             load,
+            data: value(ids::HOST_CPU_UTIL).is_some() || value(ids::HOST_MEM_UTIL).is_some(),
         };
         // Ядро всегда несёт минимальную живую массу: процесс наблюдения
         // работает, и центр фигуры не должен быть пустым.
@@ -394,9 +404,21 @@ impl StateGlyph {
         }
     }
 
+    /// Есть ли измерения хоста или хотя бы открытая проблема.
+    ///
+    /// Проблема — тоже данные: правило уже что-то измерило, и прятать её за
+    /// «NO DATA» было бы хуже, чем показать без долей.
+    #[must_use]
+    pub fn has_data(&self) -> bool {
+        self.data || self.overall().is_abnormal()
+    }
+
     /// Вердикт одной строкой: то, что оператор читает после формы.
     #[must_use]
     pub fn verdict(&self) -> &'static str {
+        if !self.has_data() {
+            return "NO DATA";
+        }
         match self.overall() {
             StateClass::Failed => "FUNCTION LOST",
             StateClass::Critical => "CRITICAL",
@@ -404,6 +426,69 @@ impl StateGlyph {
             StateClass::Degraded => "ATTENTION",
             StateClass::Saturated => "BUSY",
             _ => "SYSTEM NOMINAL",
+        }
+    }
+
+    /// Куда клонится масса фигуры: сектор с заметно наибольшей нагрузкой.
+    ///
+    /// «Заметно» — не меньше 15 % и на 10 пунктов больше следующего: иначе
+    /// стрелка дёргалась бы между почти равными секторами каждый такт.
+    #[must_use]
+    pub fn lean(&self) -> Option<(Sector, f64)> {
+        let mut loads = [
+            (Sector::Cpu, self.load.get(Sector::Cpu)),
+            (Sector::Memory, self.load.get(Sector::Memory)),
+            (Sector::Io, self.load.get(Sector::Io)),
+            (Sector::Net, self.load.get(Sector::Net)),
+        ];
+        loads.sort_by(|a, b| b.1.total_cmp(&a.1));
+        match loads {
+            [(sector, top), (_, next), ..] if top >= 0.15 && top - next >= 0.10 => {
+                Some((sector, top))
+            }
+            _ => None,
+        }
+    }
+
+    /// Пояснение к вердикту: что это значит и куда клонится масса.
+    ///
+    /// Стрелка совпадает со стороной фигуры, где живёт сектор, поэтому
+    /// строка читается как подпись к форме, а не как отдельный прибор.
+    #[must_use]
+    pub fn verdict_detail(&self, capability: Capability) -> String {
+        if !self.has_data() {
+            return "no measurements yet".to_string();
+        }
+        let what = match self.overall() {
+            StateClass::Failed => "a function is lost",
+            StateClass::Critical => "critical state",
+            StateClass::Warning => "attention needed",
+            StateClass::Degraded => "partial impairment",
+            StateClass::Saturated => "elevated activity",
+            _ => "all systems nominal",
+        };
+        let ascii = matches!(capability, Capability::Ascii);
+        let dot = if ascii { " - " } else { " · " };
+        match self.lean() {
+            Some((sector, load)) => {
+                let arrow = match (sector, ascii) {
+                    (Sector::Cpu, false) => "↑",
+                    (Sector::Memory, false) => "→",
+                    (Sector::Io, false) => "↓",
+                    (Sector::Net, false) => "←",
+                    (Sector::Cpu, true) => "^",
+                    (Sector::Memory, true) => ">",
+                    (Sector::Io, true) => "v",
+                    (Sector::Net, true) => "<",
+                    (Sector::Core, _) => "",
+                };
+                format!(
+                    "{what}{dot}leans {arrow} {} {:.0}%",
+                    sector.label(),
+                    load * 100.0
+                )
+            }
+            None => format!("{what}{dot}centered"),
         }
     }
 
@@ -532,6 +617,57 @@ mod tests {
             last_seen: Timestamp::from_millis(2_000),
             streak: 3,
         }
+    }
+
+    /// До первого замера фигура не утверждает «норма»: вердикт NO DATA, и
+    /// в поле нет ни одной залитой ячейки — только фон и контур.
+    #[test]
+    fn no_measurements_mean_no_data_not_nominal() {
+        let glyph = StateGlyph::from_snapshot(&snapshot(&[], Vec::new()));
+        assert_eq!(glyph.verdict(), "NO DATA");
+        assert_eq!(
+            glyph.verdict_detail(Capability::TrueColor),
+            "no measurements yet"
+        );
+        let surface = crate::glyph::GlyphSurface::build(&glyph, crate::layout::GlyphPreset::Large);
+        assert!(
+            surface
+                .cells()
+                .iter()
+                .flatten()
+                .all(|class| matches!(class, StateClass::Inactive | StateClass::Normal)),
+            "{:?}",
+            surface.cells()
+        );
+    }
+
+    /// Центр масс назван словами и стрелкой той стороны фигуры, где живёт
+    /// сектор; при почти равной нагрузке — «centered», а не дёрганье.
+    #[test]
+    fn detail_names_where_the_mass_leans() {
+        let leaning = StateGlyph::from_snapshot(&snapshot(
+            &[(ids::HOST_CPU_UTIL, 0.05), (ids::HOST_MEM_UTIL, 0.62)],
+            Vec::new(),
+        ));
+        assert_eq!(
+            leaning.lean().map(|(sector, _)| sector),
+            Some(Sector::Memory)
+        );
+        assert!(
+            leaning
+                .verdict_detail(Capability::TrueColor)
+                .ends_with("leans → mem 62%"),
+            "{}",
+            leaning.verdict_detail(Capability::TrueColor)
+        );
+        let even = StateGlyph::from_snapshot(&snapshot(
+            &[(ids::HOST_CPU_UTIL, 0.40), (ids::HOST_MEM_UTIL, 0.45)],
+            Vec::new(),
+        ));
+        assert_eq!(even.lean(), None);
+        assert!(even
+            .verdict_detail(Capability::Ascii)
+            .ends_with(" - centered"));
     }
 
     #[test]

@@ -73,6 +73,25 @@ impl GlyphSurface {
             GlyphPreset::Medium => Self::from_shape(glyph, &MEDIUM, 2, 1, false),
             GlyphPreset::Large => Self::from_shape(glyph, &LARGE, 4, 3, true),
         };
+        // Без измерений массы нет: живой центр утверждал бы нагрузку, которой
+        // PULSE ещё не видел. Остаются фон и контур — рамка отсчёта.
+        let rows = if glyph.has_data() {
+            rows
+        } else {
+            rows.into_iter()
+                .map(|row| {
+                    row.into_iter()
+                        .map(|class| {
+                            if class == StateClass::Normal {
+                                class
+                            } else {
+                                StateClass::Inactive
+                            }
+                        })
+                        .collect()
+                })
+                .collect()
+        };
         Self { rows }
     }
 
