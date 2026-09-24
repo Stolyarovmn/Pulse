@@ -78,11 +78,14 @@ cgroup 90..=149, process 150..=189, agent 190..=219).
 
 | Функция | Где | Статус |
 |---|---|---|
-| Экраны: Overview, Problems, Entities, Timeline/Time Machine, Help (overlay), acceptance | `src/screens/` | реализовано |
+| Экраны: Overview, Problems, Entities, Timeline/Time Machine; overlays: палитра/справка, Search, Pipe; acceptance | `src/screens/` | реализовано |
 | Единый UI state: видимое = фокус = клавиатурная цель; renderer публикует видимые панели | `src/app.rs`, `src/layout.rs` | реализовано |
-| Клавиатура: `1–4` экраны, `↑↓/k j`, `Enter`, `Esc`, `Tab/Shift+Tab` (pane-local), `/` поиск, `:` палитра, `?/F1` help, `q/Ctrl+C` | `src/screens/help.rs` | реализовано |
+| Клавиатура: `1–4` экраны, `↑↓/k j`, `Enter`, `Esc`, `Tab/Shift+Tab` (pane-local), `/` поиск, `q/Ctrl+C` | `src/app.rs` | реализовано |
+| Палитра команд `:` (команды текущего места) и справка `?/F1` (все команды, алфавит состояний): `↑↓` выбор, `Enter` выполняет той же клавишей, набор фильтрует | `src/palette.rs`, `src/screens/palette.rs` | реализовано |
 | Контекстный Inspector: сессия с origin/путём, `A→B→C→A` = `[A]`, `Esc` возвращает точный origin | `src/screens/inspector.rs`, `src/investigate.rs` | реализовано |
+| Inspector как дело: TRAIL, CASE, LEADS (зацепки-факты), INSIDE (каждый объект с долей CPU), AROUND, DOSSIER, RECENT; 3/2/1 колонки по ширине; `Enter` открывает показанную строку | `src/screens/inspector.rs`, `src/leads.rs` | реализовано |
 | Расследование как направленный спуск: уровни сущностей, `Enter` вниз по уровню/дереву, ресурсы — листья, прыжок в сторону — отдельный список | `src/investigate.rs` | реализовано |
+| Единый словарь отметок событий (◇◆▲ ✓ ▼ ↻ + − ~ !) для Overview, Story и дорожки EVENTS | `src/marks.rs`, `src/screens/timeline.rs` | реализовано |
 | Explainable relevance: `WHY` у каждой строки `RELEVANT ENTITIES`; без причин блок называется `KEY ENTITIES` | `src/screens/overview.rs`, `src/fold.rs` | реализовано |
 | Логическая свёртка (`unit+14p`), `m` — technical view | `src/screens/entities.rs`, `src/fold.rs` | реализовано |
 | Анти-stretch layout: `max_useful_width`, остаток ширины — намеренная пустота | `src/layout.rs` | реализовано |
