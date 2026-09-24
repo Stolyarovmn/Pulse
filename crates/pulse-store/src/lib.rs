@@ -515,6 +515,19 @@ impl History {
         self.events.recent(limit)
     }
 
+    /// Последние `raw` событий плюс последние `kept` прошедших `keep`.
+    ///
+    /// См. [`events::Events::recent_keeping`]: значимое переживает шум.
+    #[must_use]
+    pub fn recent_events_keeping(
+        &self,
+        raw: usize,
+        kept: usize,
+        keep: impl Fn(&Event) -> bool,
+    ) -> Vec<&Event> {
+        self.events.recent_keeping(raw, kept, keep)
+    }
+
     /// Начало сохранённой истории: warm-слой, а при его отсутствии горячее
     /// кольцо.
     ///

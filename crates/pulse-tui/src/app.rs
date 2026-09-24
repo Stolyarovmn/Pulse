@@ -277,6 +277,15 @@ pub struct InspectorSession {
     pub relation_len: usize,
     /// Список, по которому ходит курсор и который получает `Enter`.
     pub list: InspectorList,
+    /// Ключи строк активного списка в том порядке, в каком их показал
+    /// последний кадр.
+    ///
+    /// Списки пересчитываются на каждом такте: зацепка исчезает, когда доля
+    /// падает ниже порога, INSIDE пересортировывается по CPU. На stage-1
+    /// `Enter` по видимой зацепке открывал пустоту — к моменту нажатия её уже
+    /// не было в свежем списке. `Enter` обязан открыть то, что видел
+    /// оператор, а курсор — держаться за объект, а не за номер строки.
+    pub shown: Vec<EntityKey>,
 }
 
 impl InspectorSession {
@@ -289,6 +298,7 @@ impl InspectorSession {
             relation_selected: 0,
             relation_len: 0,
             list: InspectorList::Chain,
+            shown: Vec::new(),
         }
     }
 
@@ -302,6 +312,7 @@ impl InspectorSession {
         self.current = target;
         self.relation_selected = 0;
         self.list = InspectorList::Chain;
+        self.shown.clear();
     }
 
     /// Боковой переход: новое расследование с нового корня.
@@ -314,6 +325,7 @@ impl InspectorSession {
         self.current = target;
         self.relation_selected = 0;
         self.list = InspectorList::Chain;
+        self.shown.clear();
     }
 
     /// Назад по уникальному relation path.
@@ -327,6 +339,7 @@ impl InspectorSession {
         }
         self.relation_selected = 0;
         self.list = InspectorList::Chain;
+        self.shown.clear();
         true
     }
 }
@@ -998,7 +1011,13 @@ impl App {
                     .inspector
                     .as_ref()
                     .map_or(0, |inspector| inspector.relation_selected);
-                let target = match list {
+                let shown = self
+                    .inspector
+                    .as_ref()
+                    .and_then(|inspector| inspector.shown.get(selected).cloned());
+                // Кадр уже нарисован — открывается то, что на нём было. Без
+                // кадра (одноразовые команды, тесты) список строится заново.
+                let target = shown.or_else(|| match list {
                     InspectorList::Chain => self
                         .inspector_relations(snapshot)
                         .get(selected)
@@ -1011,7 +1030,7 @@ impl App {
                         .inspector_leads(snapshot)
                         .get(selected)
                         .map(|lead| lead.key.clone()),
-                };
+                });
                 match (target, &mut self.inspector) {
                     (Some(target), Some(inspector)) => match list {
                         // Боковой переход — не продолжение цепочки: он
@@ -1061,6 +1080,7 @@ impl App {
                     }
                     inspector.list = list;
                     inspector.relation_selected = 0;
+                    inspector.shown.clear();
                 }
                 Some(Action::None)
             }

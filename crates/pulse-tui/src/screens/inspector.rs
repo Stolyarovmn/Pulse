@@ -93,20 +93,32 @@ pub(crate) fn render(
     let leads = app.inspector_leads(snapshot);
     let around = app.inspector_side_steps(snapshot);
     let trail = trail_names(snapshot, app);
-    let (focus, raw_selected) = app
+    let focus = app
         .inspector
         .as_ref()
-        .map_or((InspectorList::Chain, 0), |session| {
-            (session.list, session.relation_selected)
-        });
-    let focus_len = match focus {
-        InspectorList::Chain => inside.len(),
-        InspectorList::Leads => leads.len(),
-        InspectorList::Related => around.len(),
+        .map_or(InspectorList::Chain, |session| session.list);
+    let keys: Vec<pulse_core::EntityKey> = match focus {
+        InspectorList::Chain => inside.iter().map(|row| row.key.clone()).collect(),
+        InspectorList::Leads => leads.iter().map(|lead| lead.key.clone()).collect(),
+        InspectorList::Related => around.iter().map(|step| step.key.clone()).collect(),
     };
+    let focus_len = keys.len();
+    let mut raw_selected = 0;
     if let Some(session) = &mut app.inspector {
-        // Длина активного списка: по нему двигается курсор.
+        // Курсор держится за объект, а не за номер строки: список
+        // пересортировался за такт — выбранный объект остался выбранным.
+        if let Some(position) = session
+            .shown
+            .get(session.relation_selected)
+            .and_then(|previous| keys.iter().position(|key| key == previous))
+        {
+            session.relation_selected = position;
+        }
+        // Длина активного списка: по нему двигается курсор. Ключи — то, что
+        // откроет `Enter`.
         session.relation_len = focus_len;
+        session.shown = keys;
+        raw_selected = session.relation_selected;
     }
     let details = process_details(app, snapshot, entity);
 

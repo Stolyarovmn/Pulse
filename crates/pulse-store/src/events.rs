@@ -82,6 +82,41 @@ impl Events {
         self.events.iter().skip(skip).collect()
     }
 
+    /// Последние `raw` событий плюс последние `kept` из тех, что проходят
+    /// `keep`, свежие последними, без повторов.
+    ///
+    /// Одного окна по счёту мало: на stage-1 шум ядра и контейнеров
+    /// заполнял 200 последних событий за 10–20 секунд, и начало наблюдения
+    /// с открытой проблемой уходили из Story, хотя журнал их хранил.
+    /// Значимое обязано переживать шум, поэтому оно добирается отдельным
+    /// счётом из той же очереди. Обход идёт от свежих и останавливается,
+    /// как только оба счёта набраны.
+    #[must_use]
+    pub fn recent_keeping(
+        &self,
+        raw: usize,
+        kept: usize,
+        keep: impl Fn(&Event) -> bool,
+    ) -> Vec<&Event> {
+        let mut out: Vec<&Event> = Vec::new();
+        let mut kept_count = 0;
+        for (index, event) in self.events.iter().rev().enumerate() {
+            let within_raw = index < raw;
+            if !within_raw && kept_count >= kept {
+                break;
+            }
+            let keeps = kept_count < kept && keep(event);
+            if keeps {
+                kept_count += 1;
+            }
+            if within_raw || keeps {
+                out.push(event);
+            }
+        }
+        out.reverse();
+        out
+    }
+
     #[must_use]
     pub fn total(&self) -> u64 {
         self.total
@@ -170,5 +205,36 @@ mod tests {
         let mut events = Events::new(100);
         events.push(event(1_000));
         assert_eq!(events.recent(50).len(), 1);
+    }
+
+    /// Живой кадр stage-1: шум за 20 с вытеснял из окна в 200 событий начало
+    /// наблюдения и открытую проблему, и Story пустел. Значимое обязано
+    /// попадать в выборку, сколько бы шума ни пришло после него, без
+    /// повторов и в порядке времени.
+    #[test]
+    fn kept_events_survive_a_flood_of_noise() {
+        let mut events = Events::new(1_000);
+        events.push(Event::new(
+            Timestamp::from_millis(1),
+            EventKind::ProblemOpened,
+            "host",
+        ));
+        for at in 2..=500u64 {
+            events.push(event(at));
+        }
+        let keep = |event: &Event| event.kind == EventKind::ProblemOpened;
+        let found = events.recent_keeping(200, 200, keep);
+        assert_eq!(found.len(), 201, "200 свежих плюс одно значимое");
+        assert_eq!(
+            found.first().map(|event| event.kind),
+            Some(EventKind::ProblemOpened)
+        );
+        assert!(found.windows(2).all(|pair| match pair {
+            [a, b] => a.at <= b.at,
+            _ => true,
+        }));
+        // Значимое внутри свежего окна не удваивается.
+        let fresh = events.recent_keeping(1_000, 200, keep);
+        assert_eq!(fresh.len(), 500);
     }
 }

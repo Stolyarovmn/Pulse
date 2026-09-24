@@ -891,6 +891,73 @@ fn inspector_never_renders_empty_top_level_page() {
     assert_eq!(app.screen, Screen::Timeline, "4 is Timeline, not Inspector");
 }
 
+/// Живой кадр stage-1: `Enter` по видимой зацепке ничего не открыл — к
+/// моменту нажатия свежий снимок её уже не содержал. Курсор обязан держаться
+/// за объект при пересортировке, а `Enter` — открывать показанную строку.
+#[test]
+fn inspector_cursor_follows_the_object_and_enter_opens_what_was_shown() {
+    let build = |heavy: &str| {
+        let mut graph = EntityGraph::new("boot", "host", Timestamp::from_millis(1_000));
+        graph.begin_tick(Timestamp::from_millis(2_000));
+        let host = graph.host();
+        let slice = graph.upsert(
+            EntitySpec::new(EntityKey::Cgroup { cgroup_id: 1 }, "system.slice").parent(host),
+        );
+        let mut latest = LatestValues::new();
+        for (id, name) in [(2, "alpha.service"), (3, "beta.service")] {
+            let cgroup = graph
+                .upsert(EntitySpec::new(EntityKey::Cgroup { cgroup_id: id }, name).parent(slice));
+            let cpu = if name == heavy { 1.0 } else { 0.1 };
+            latest.set(SeriesKey::new(cgroup, ids::CG_CPU_CORES), cpu);
+        }
+        let _ = graph.end_tick();
+        Snapshot::build(
+            &graph,
+            latest,
+            vec![],
+            vec![],
+            AgentStats::default(),
+            "host",
+            "boot",
+        )
+    };
+    let first = build("alpha.service");
+    let key_of = |snapshot: &Snapshot, name: &str| {
+        snapshot
+            .entities
+            .iter()
+            .find(|entity| entity.name == name)
+            .map(|entity| entity.key.clone())
+            .expect("сущность")
+    };
+    let mut app = App::default();
+    app.open_inspector(key_of(&first, "system.slice"));
+    let _ = draw(160, 40, &first, &mut app);
+    // INSIDE: alpha (1.0c), beta (0.1c). Курсор — на beta.
+    let _ = app.dispatch(key(KeyCode::Down), &first);
+    let _ = draw(160, 40, &first, &mut app);
+    // Нагрузка поменялась местами: beta стал первым.
+    let second = build("beta.service");
+    let _ = draw(160, 40, &second, &mut app);
+    assert_eq!(
+        app.inspector
+            .as_ref()
+            .map(|session| session.relation_selected),
+        Some(0),
+        "курсор ушёл вслед за beta"
+    );
+    // Enter на снимке, где beta уже нет, открывает показанную строку.
+    let mut gone = build("alpha.service");
+    gone.entities.retain(|entity| entity.name != "beta.service");
+    let _ = app.dispatch(key(KeyCode::Enter), &gone);
+    assert_eq!(
+        app.inspector
+            .as_ref()
+            .map(|session| session.current.clone()),
+        Some(key_of(&second, "beta.service"))
+    );
+}
+
 /// Место оператора видно в футере плашкой цвета места: экран, а поверх
 /// него — открытая палитра. Ровно один пункт выделен, и это не лишние
 /// символы, а фон: текст футера не меняется.

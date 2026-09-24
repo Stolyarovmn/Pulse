@@ -253,7 +253,17 @@ fn collect_loop(
 
         let (events, store_stats) = with_history_write(&history, |stored| {
             stored.ingest(&batch);
-            let events = stored.recent_events(200).into_iter().cloned().collect();
+            // Сырое окно — для потока raw events, значимые добираются
+            // отдельно: иначе шум вытеснял из Story начало наблюдения и
+            // открытую проблему за десятки секунд.
+            let events = stored
+                .recent_events_keeping(200, 200, |event| {
+                    pulse_core::semantic::significance(event)
+                        != pulse_core::semantic::Significance::Noise
+                })
+                .into_iter()
+                .cloned()
+                .collect();
             let stats = StoreStats {
                 series: stored.series_count(),
                 samples: stored.samples_stored(),
