@@ -16,7 +16,7 @@ use pulse_core::{Event, EventKind, Timestamp};
 use crate::app::{raw_events, story_events, App};
 use crate::layout::{LayoutPlan, Pane};
 use crate::state::StateClass;
-use crate::theme::{Capability, Theme};
+use crate::theme::{Capability, Series, Theme};
 use crate::ui;
 
 use super::{focused_section, observation, rect};
@@ -404,13 +404,21 @@ fn render_metric_lanes(
     let width = usize::from(area.width).saturating_sub(12).max(4);
 
     let lanes = [
-        ("CPU", pulse_core::metric::ids::HOST_CPU_UTIL),
-        ("MEM", pulse_core::metric::ids::HOST_MEM_UTIL),
-        ("IO", pulse_core::metric::ids::HOST_PSI_IO_FULL_AVG10),
+        ("CPU", pulse_core::metric::ids::HOST_CPU_UTIL, Series::Cpu),
+        (
+            "MEM",
+            pulse_core::metric::ids::HOST_MEM_UTIL,
+            Series::Memory,
+        ),
+        (
+            "IO",
+            pulse_core::metric::ids::HOST_PSI_IO_FULL_AVG10,
+            Series::Io,
+        ),
     ];
     let mut lines: Vec<Line<'_>> = lanes
         .iter()
-        .map(|(label, metric)| {
+        .map(|(label, metric, series)| {
             let points = history.map_or_else(Vec::new, |history| {
                 history.points(
                     pulse_core::sample::SeriesKey::new(snapshot.host, *metric),
@@ -427,12 +435,12 @@ fn render_metric_lanes(
                 |value| format!("{:>4} ", crate::format::percent(value)),
             );
             let lane = if points.len() >= 2 {
-                // Дорожка рисуется по абсолютной шкале доли и приглушённым
-                // цветом: три ярких ряда на всю ширину читаются как полотно,
-                // а не как измерение.
+                // Дорожка рисуется по абсолютной шкале доли своим приглушённым
+                // тоном серии: CPU, память и IO различимы до чтения подписи,
+                // а яркие ряды на всю ширину читались бы как полотно.
                 Span::styled(
                     crate::format::ratio_lane(&points, width, (from, to), theme),
-                    theme.dim(),
+                    theme.series(*series),
                 )
             } else {
                 Span::styled(format!("{dot} collecting history"), theme.dim())

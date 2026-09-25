@@ -1,9 +1,10 @@
 //! Визуальный язык.
 //!
-//! Цвет несёт два смысла и только их: **состояние** (норма, предупреждение,
-//! критично) и **место** — где сейчас фокус, что выбрано, на каком экране
-//! оператор. Всё остальное приглушено: подписи, линии, единицы. Так яркое в
-//! кадре всегда значит «здесь беда» или «здесь ты», а не украшение.
+//! Цвет несёт три смысла и только их: **состояние** (норма, предупреждение,
+//! критично), **место** — где сейчас фокус, что выбрано, на каком экране
+//! оператор — и, только в дорожках графиков, **серию** — какая это метрика.
+//! Всё остальное приглушено: подписи, линии, единицы. Так яркое в кадре
+//! всегда значит «здесь беда» или «здесь ты», а не украшение.
 //!
 //! Палитра приглушённая (ориентир — netwatch): на truecolor это мягкие тона
 //! на тёмном фоне, на 256 цветах — ближайшие индексы, в ASCII — базовые
@@ -87,6 +88,14 @@ impl Glyphs {
             }
         }
     }
+}
+
+/// Серия графика для цвета дорожки.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Series {
+    Cpu,
+    Memory,
+    Io,
 }
 
 /// Тема оформления.
@@ -206,6 +215,24 @@ impl Theme {
             .add_modifier(Modifier::BOLD)
     }
 
+    /// Цвет серии на графике: какая это метрика.
+    ///
+    /// Третья, узкая роль цвета — только в дорожках графиков, никогда в
+    /// тексте. Ориентир — netwatch: у каждой дорожки свой приглушённый тон,
+    /// и CPU, память, IO различимы до чтения подписи. Тона выбраны вне
+    /// тревожных (красный, жёлтый, янтарь) и вне цвета места (синий), поэтому
+    /// серия не спутается ни с бедой, ни с фокусом. Тревога живёт в числе
+    /// рядом с дорожкой, окрашенном по порогу.
+    #[must_use]
+    pub fn series(&self, series: Series) -> Style {
+        let color = match series {
+            Series::Cpu => self.pick((118, 158, 112), 107, Color::Green),
+            Series::Memory => self.pick((96, 150, 156), 66, Color::Cyan),
+            Series::Io => self.pick((150, 128, 178), 97, Color::Magenta),
+        };
+        Style::default().fg(color)
+    }
+
     /// Цвет для доли: спокойный до 0.7, предупреждение до 0.9, дальше критично.
     #[must_use]
     pub fn ratio(&self, value: f64) -> Style {
@@ -287,5 +314,36 @@ mod tests {
         assert_eq!(theme.ratio(0.1).fg, theme.text().fg);
         assert_eq!(theme.ratio(0.75).fg, theme.severity(Severity::Warn).fg);
         assert_eq!(theme.ratio(0.95).fg, theme.severity(Severity::Crit).fg);
+    }
+
+    /// Серия не спутается ни с тревогой, ни с местом: тона дорожек попарно
+    /// различны и не совпадают с цветами severity, деградации и фокуса — на
+    /// всех уровнях терминала.
+    #[test]
+    fn series_colors_never_collide_with_state_or_place() {
+        for capability in [
+            Capability::TrueColor,
+            Capability::Ansi256,
+            Capability::Ascii,
+        ] {
+            let theme = Theme::with_capability(capability);
+            let series: Vec<_> = [Series::Cpu, Series::Memory, Series::Io]
+                .into_iter()
+                .map(|series| theme.series(series).fg)
+                .collect();
+            let reserved = [
+                theme.severity(Severity::Warn).fg,
+                theme.severity(Severity::Crit).fg,
+                theme.degraded().fg,
+                theme.accent().fg,
+            ];
+            for (index, color) in series.iter().enumerate() {
+                assert!(!reserved.contains(color), "{capability:?}: {color:?}");
+                assert!(
+                    !series.iter().skip(index + 1).any(|other| other == color),
+                    "{capability:?}: серии совпали"
+                );
+            }
+        }
     }
 }

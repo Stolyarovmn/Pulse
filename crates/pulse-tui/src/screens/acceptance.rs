@@ -919,6 +919,16 @@ fn state_river_marks_critical_opening_as_critical() {
         river.contains('▲') && !river.contains('◆'),
         "{river}\n{text}"
     );
+    // Дорожка EVENTS в кадре: в окне начало наблюдения (`●`) и открытая
+    // проблема (`▲`), число событий рядом.
+    let events = text
+        .lines()
+        .find(|line| line.starts_with("EVENTS"))
+        .unwrap_or_default();
+    assert!(
+        events.contains('▲') && events.contains('●') && events.contains(" 2 "),
+        "дорожка событий в кадре: {events}\n{text}"
+    );
 }
 
 /// Живой кадр stage-1: `Enter` по видимой зацепке ничего не открыл — к
