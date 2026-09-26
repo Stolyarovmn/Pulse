@@ -67,6 +67,12 @@ pub struct Security {
     /// Дополнительная эвристика: скрывать значения с высокой энтропией.
     /// Выключена по умолчанию — даёт ложные срабатывания на хешах и UUID.
     pub redact_high_entropy: bool,
+    /// Разрешить чтение journald по раскрытию ветки Inspector/pipe.
+    ///
+    /// По умолчанию выключено: свободный текст журналов может содержать
+    /// секреты и требует прав `systemd-journal`. Данные не экспортируются и
+    /// не сохраняются в историю.
+    pub read_journal: bool,
 }
 
 impl Default for Security {
@@ -76,6 +82,7 @@ impl Default for Security {
             allow_actions: false,
             read_cmdline: true,
             redact_high_entropy: false,
+            read_journal: false,
         }
     }
 }
@@ -550,6 +557,10 @@ mod tests {
         );
         assert_eq!(c.security.redact, RedactMode::Secrets);
         assert!(!c.security.allow_actions, "действия выключены по умолчанию");
+        assert!(
+            !c.security.read_journal,
+            "свободный текст журнала требует явного opt-in"
+        );
         assert_eq!(c.export.processes.mode, ProcessExportMode::None);
     }
 

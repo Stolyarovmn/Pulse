@@ -1022,7 +1022,7 @@ fn footer_marks_where_the_operator_is() {
     app.screen = Screen::Entities;
     assert_eq!(marked(&mut app), "[3]Entities");
     let _ = app.dispatch(key(KeyCode::Char(':')), &snapshot);
-    assert_eq!(marked(&mut app), "[:]Commands");
+    assert_eq!(marked(&mut app), "[COMMANDS]");
 }
 
 /// Палитра — не поле ввода, а список: стрелка выбирает, `Enter` выполняет
@@ -1120,6 +1120,28 @@ fn footer_is_hotkey_legend_not_tab_bar() {
         assert!(footer.contains(hint), "missing {hint}: {footer}");
     }
     assert!(!footer.contains("P problems"));
+}
+
+#[test]
+fn inspector_footer_teaches_only_contextual_actions() {
+    let snapshot = healthy();
+    let process = snapshot
+        .entities_of_kind(EntityKind::Process)
+        .next()
+        .expect("process")
+        .key
+        .clone();
+    let mut app = App::default();
+    app.open_inspector(process);
+    let lines = draw(180, 40, &snapshot, &mut app);
+    let footer = lines.last().expect("footer");
+    for hint in ["[INSPECTOR]", "[Enter]Follow", "[Tab]Panel", "[Esc]Back"] {
+        assert!(footer.contains(hint), "missing {hint}: {footer}");
+    }
+    assert!(
+        !footer.contains("[1]Overview"),
+        "глобальная навигация не вытесняет действия Inspector: {footer}"
+    );
 }
 
 #[test]
@@ -2503,7 +2525,11 @@ fn process_inspector_answers_user_exe_and_ports() {
     #[derive(Debug)]
     struct Fixed;
     impl pulse_core::ProcessDetailsSource for Fixed {
-        fn details(&self, _of: pulse_core::ProcessIdentity) -> pulse_core::ProcessDetails {
+        fn details(
+            &self,
+            _of: pulse_core::ProcessIdentity,
+            _query: pulse_core::DetailsQuery,
+        ) -> pulse_core::ProcessDetails {
             pulse_core::ProcessDetails {
                 uid: Some(33),
                 user: Some("www-data".into()),
@@ -2519,9 +2545,11 @@ fn process_inspector_answers_user_exe_and_ports() {
                     address: "0.0.0.0".into(),
                     port: 80,
                 }],
+                journal: vec!["2026-09-26 nginx[7]: upstream timeout".into()],
                 restricted: false,
                 fd_truncated: false,
                 identity_changed: false,
+                ..pulse_core::ProcessDetails::default()
             }
         }
     }
@@ -2554,6 +2582,10 @@ fn process_inspector_answers_user_exe_and_ports() {
         text.contains("/var/log/nginx/access.log"),
         "открытый файл: {text}"
     );
+    assert!(
+        text.contains("upstream timeout"),
+        "привязанный journal виден в деле процесса: {text}"
+    );
 }
 
 /// Отказ ядра в правах обязан быть назван, а не выглядеть как отсутствие файлов.
@@ -2562,7 +2594,11 @@ fn restricted_details_explain_the_reason() {
     #[derive(Debug)]
     struct Restricted;
     impl pulse_core::ProcessDetailsSource for Restricted {
-        fn details(&self, _of: pulse_core::ProcessIdentity) -> pulse_core::ProcessDetails {
+        fn details(
+            &self,
+            _of: pulse_core::ProcessIdentity,
+            _query: pulse_core::DetailsQuery,
+        ) -> pulse_core::ProcessDetails {
             pulse_core::ProcessDetails {
                 uid: Some(0),
                 user: Some("root".into()),

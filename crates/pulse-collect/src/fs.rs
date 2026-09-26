@@ -16,6 +16,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 /// Максимальный объём одного чтения по умолчанию.
@@ -92,6 +93,16 @@ pub trait FsSource: Send + Sync + std::fmt::Debug {
     /// Inode каталога или файла.
     fn inode(&self, path: &Path) -> io::Result<u64>;
 
+    /// Число открытых дескрипторов процесса по его каталогу `/proc/<pid>/fd`.
+    ///
+    /// Реализация по умолчанию считает записи каталога. [`RealFs`] на Linux
+    /// 6.2+ берёт готовое число ядра из `st_size` этого каталога: обход
+    /// `getdents` на сервере с тысячами соединений стоил в семь раз дороже
+    /// (PULSE-088).
+    fn open_fd_count(&self, fd_dir: &Path) -> io::Result<usize> {
+        self.count_dir(fd_dir)
+    }
+
     /// Занятость файловой системы точки монтирования.
     fn statfs(&self, path: &Path) -> io::Result<FsUsage>;
 }
@@ -103,8 +114,7 @@ pub trait FsSourceExt: FsSource {
     /// Данные из ядра не гарантированно UTF-8 (имя процесса пишет сам процесс),
     /// поэтому здесь именно `from_utf8_lossy`, а не отказ.
     fn read_string(&self, path: &Path) -> io::Result<String> {
-        let bytes = self.read(path, DEFAULT_CAP)?;
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
+        Ok(into_string(self.read(path, DEFAULT_CAP)?))
     }
 
     /// Читает файл как строку с явным лимитом размера.
@@ -113,8 +123,7 @@ pub trait FsSourceExt: FsSource {
     /// содержит сотни overlay-записей и легко перерастает 64 КиБ, а обрезка
     /// списка монтирований потеряла бы реальные файловые системы.
     fn read_string_capped(&self, path: &Path, cap: usize) -> io::Result<String> {
-        let bytes = self.read(path, cap)?;
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
+        Ok(into_string(self.read(path, cap)?))
     }
 
     /// Читает файл и возвращает `None` при любой ошибке.
@@ -127,8 +136,7 @@ pub trait FsSourceExt: FsSource {
 
     /// [`FsSource::read_single`] как строка; `None` при любой ошибке.
     fn read_single_opt(&self, path: &Path) -> Option<String> {
-        let bytes = self.read_single(path, DEFAULT_CAP).ok()?;
-        Some(String::from_utf8_lossy(&bytes).into_owned())
+        self.read_single(path, DEFAULT_CAP).ok().map(into_string)
     }
 
     /// Имена элементов каталога, не более `cap`.
@@ -162,6 +170,15 @@ pub trait FsSourceExt: FsSource {
 }
 
 impl<T: FsSource + ?Sized> FsSourceExt for T {}
+
+/// Байты ядра как строка с потерей некорректного UTF-8.
+///
+/// Корректный UTF-8 — почти всегда — превращается в строку без копии; копия
+/// каждого прочитанного файла стоила тысячи выделений памяти за такт.
+fn into_string(bytes: Vec<u8>) -> String {
+    String::from_utf8(bytes)
+        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned())
+}
 
 /// Размер одного чтения в [`FsSource::read_single`]: страница, как отдаёт
 /// seq_file.
@@ -225,6 +242,21 @@ impl FsSource for RealFs {
         Ok(stat.st_ino as u64)
     }
 
+    fn open_fd_count(&self, fd_dir: &Path) -> io::Result<usize> {
+        // С Linux 6.2 ядро кладёт число открытых дескрипторов в `st_size`
+        // каталога `/proc/<pid>/fd` — ровно ради мониторинга. Ноль
+        // неоднозначен (старое ядро или процесс без файлов), а у каталога вне
+        // procfs `st_size` — байты, а не дескрипторы: оба случая считаются
+        // обходом, как раньше.
+        let stat = rustix::fs::stat(fd_dir)?;
+        if stat.st_size > 0 && on_procfs(fd_dir, stat.st_dev) {
+            if let Ok(count) = usize::try_from(stat.st_size) {
+                return Ok(count);
+            }
+        }
+        self.count_dir(fd_dir)
+    }
+
     fn statfs(&self, path: &Path) -> io::Result<FsUsage> {
         let stat = rustix::fs::statvfs(path)?;
         let block = if stat.f_frsize == 0 {
@@ -238,6 +270,23 @@ impl FsSource for RealFs {
             available: stat.f_bavail.saturating_mul(block),
         })
     }
+}
+
+/// `st_dev` файловой системы, уже подтверждённой как procfs.
+///
+/// Устройство одно на монтирование, поэтому `statfs` делается один раз, а не
+/// на каждый процесс каждый такт.
+static PROCFS_DEV: AtomicU64 = AtomicU64::new(u64::MAX);
+
+fn on_procfs(path: &Path, dev: u64) -> bool {
+    if PROCFS_DEV.load(Ordering::Relaxed) == dev {
+        return true;
+    }
+    let procfs = rustix::fs::statfs(path).is_ok_and(|fs| fs.f_type == rustix::fs::PROC_SUPER_MAGIC);
+    if procfs {
+        PROCFS_DEV.store(dev, Ordering::Relaxed);
+    }
+    procfs
 }
 
 /// Дерево в памяти для тестов.
@@ -482,6 +531,20 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         assert_eq!(whole.expect("чтение"), content);
         assert_eq!(capped.expect("чтение").len(), 5_000);
+    }
+
+    /// `st_size` каталога вне procfs — байты, а не дескрипторы: довериться ему
+    /// значило бы показать тысячи открытых файлов у процесса с тремя.
+    #[test]
+    fn fd_count_outside_procfs_counts_entries() {
+        let dir = std::env::temp_dir().join(format!("pulse-fd-count-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("создать каталог");
+        for name in ["0", "1", "2"] {
+            std::fs::write(dir.join(name), b"").expect("записать файл");
+        }
+        let count = RealFs.open_fd_count(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(count.expect("подсчёт"), 3);
     }
 
     #[test]

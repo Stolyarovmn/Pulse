@@ -404,12 +404,18 @@ impl CgroupCollector {
         let mut io_totals: Option<(f64, f64)> = None;
 
         if let Some(text) = self.read(dir, "cpu.stat") {
-            let usage = parse::field(&text, "usage_usec").unwrap_or(0.0);
-            let user = parse::field(&text, "user_usec").unwrap_or(0.0);
-            let system = parse::field(&text, "system_usec").unwrap_or(0.0);
-            let periods = parse::field(&text, "nr_periods").unwrap_or(0.0);
-            let throttled = parse::field(&text, "nr_throttled").unwrap_or(0.0);
-            let throttled_usec = parse::field(&text, "throttled_usec").unwrap_or(0.0);
+            let [usage, user, system, periods, throttled, throttled_usec] = parse::pick(
+                &text,
+                [
+                    "usage_usec",
+                    "user_usec",
+                    "system_usec",
+                    "nr_periods",
+                    "nr_throttled",
+                    "throttled_usec",
+                ],
+            )
+            .map(|value| value.unwrap_or(0.0));
 
             ctx.sample(cgroup, ids::CG_CPU_USAGE_USEC, usage);
             ctx.sample(cgroup, ids::CG_CPU_USER_USEC, user);
@@ -462,10 +468,11 @@ impl CgroupCollector {
         }
 
         if let Some(text) = self.read(dir, "memory.stat") {
-            if let Some(anon) = parse::field(&text, "anon") {
+            let [anon, file] = parse::pick(&text, ["anon", "file"]);
+            if let Some(anon) = anon {
                 ctx.sample(cgroup, ids::CG_MEM_ANON, anon);
             }
-            if let Some(file) = parse::field(&text, "file") {
+            if let Some(file) = file {
                 ctx.sample(cgroup, ids::CG_MEM_FILE, file);
             }
         }
@@ -475,13 +482,15 @@ impl CgroupCollector {
         }
 
         if let Some(text) = self.read(dir, "memory.events") {
-            for (key, metric) in [
-                ("high", ids::CG_MEM_EVENTS_HIGH),
-                ("max", ids::CG_MEM_EVENTS_MAX),
-                ("oom", ids::CG_MEM_EVENTS_OOM),
-                ("oom_kill", ids::CG_MEM_EVENTS_OOM_KILL),
-            ] {
-                if let Some(value) = parse::field(&text, key) {
+            let values = parse::pick(&text, ["high", "max", "oom", "oom_kill"]);
+            let metrics = [
+                ids::CG_MEM_EVENTS_HIGH,
+                ids::CG_MEM_EVENTS_MAX,
+                ids::CG_MEM_EVENTS_OOM,
+                ids::CG_MEM_EVENTS_OOM_KILL,
+            ];
+            for (value, metric) in values.into_iter().zip(metrics) {
+                if let Some(value) = value {
                     ctx.sample(cgroup, metric, value);
                 }
             }

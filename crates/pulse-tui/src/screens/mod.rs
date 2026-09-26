@@ -353,7 +353,7 @@ fn render_footer(
     plan: &LayoutPlan,
     theme: &Theme,
 ) {
-    let hints = ui::footer_line(plan.footer, area.width, theme.capability, app.icons);
+    let hints = footer_hints(app, plan, area.width, theme.capability);
     let mut spans = footer_spans(&hints, active_marker(app), theme);
     if app.show_self_metrics {
         let self_cost = self_metrics_text(snapshot);
@@ -368,16 +368,68 @@ fn render_footer(
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
+/// Контекстный футер: видимые клавиши объясняют именно текущий режим.
+///
+/// Отзывы о k9s/lazygit сходятся на сочетании muscle memory и постоянно
+/// видимых подсказок. Глобальная легенда внутри Inspector раньше занимала
+/// строку, но скрывала единственные полезные там действия Enter/Tab/Esc.
+fn footer_hints(
+    app: &App,
+    plan: &LayoutPlan,
+    width: u16,
+    capability: crate::theme::Capability,
+) -> String {
+    let context: Option<&[&str]> = match &app.overlay {
+        Some(Overlay::Palette(state)) if state.help => Some(&[
+            "[HELP]  [type]Filter  [↑↓]Select  [Enter]Run  [? Esc]Close",
+            "[HELP]  [type]Filter  [Enter]Run  [Esc]Close",
+            "[HELP]  [Esc]Close",
+        ]),
+        Some(Overlay::Palette(_)) => Some(&[
+            "[COMMANDS]  [type]Filter  [↑↓]Select  [Enter]Run  [Esc]Close",
+            "[COMMANDS]  [type]Filter  [Enter]Run  [Esc]Close",
+            "[COMMANDS]  [Esc]Close",
+        ]),
+        Some(Overlay::Search(_)) => Some(&[
+            "[SEARCH]  [type]Filter  [Enter]Apply  [Esc]Cancel",
+            "[SEARCH]  [Enter]Apply  [Esc]Cancel",
+            "[SEARCH]  [Esc]Cancel",
+        ]),
+        Some(Overlay::Pipe(_)) => Some(&[
+            "[PIPE]  [↑↓←→]Move  [Enter]Expand  [v]View  [Esc]Back  [?]Help",
+            "[PIPE]  [↑↓]Move  [Enter]Expand  [Esc]Back",
+            "[PIPE]  [Esc]Back",
+        ]),
+        None if app.inspector.is_some() => Some(&[
+            "[INSPECTOR]  [↑↓]Select  [Enter]Follow  [Tab]Panel  [Esc]Back  [?]Help",
+            "[INSPECTOR]  [Enter]Follow  [Tab]Panel  [Esc]Back",
+            "[INSPECTOR]  [Esc]Back",
+        ]),
+        None => None,
+    };
+    let Some(candidates) = context else {
+        return ui::footer_line(plan.footer, width, capability, app.icons);
+    };
+    candidates
+        .iter()
+        .find(|candidate| ui::width_of(candidate) <= usize::from(width))
+        .copied()
+        .unwrap_or("[Esc]Back")
+        .to_string()
+}
+
 /// Клавиша места, в котором сейчас оператор: экран или открытый оверлей.
 ///
 /// Инспектор — контекст поверх экрана, из которого его открыли, поэтому
 /// подсвечен экран происхождения: `Esc` вернёт именно туда.
 fn active_marker(app: &App) -> &'static str {
     match &app.overlay {
-        Some(Overlay::Palette(state)) if state.help => "[?]",
-        Some(Overlay::Palette(_)) => "[:]",
-        Some(Overlay::Search(_)) => "[/]",
-        _ => match app.screen {
+        Some(Overlay::Palette(state)) if state.help => "[HELP]",
+        Some(Overlay::Palette(_)) => "[COMMANDS]",
+        Some(Overlay::Search(_)) => "[SEARCH]",
+        Some(Overlay::Pipe(_)) => "[PIPE]",
+        None if app.inspector.is_some() => "[INSPECTOR]",
+        None => match app.screen {
             Screen::Overview => "[1]",
             Screen::Problems => "[2]",
             Screen::Entities => "[3]",

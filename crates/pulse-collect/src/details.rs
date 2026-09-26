@@ -7,12 +7,16 @@
 //! проблемой. Оператор же смотрит детали одного процесса, и только когда
 //! спустился до него по цепочке расследования.
 
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 
-use pulse_core::details::{OpenFile, Port, ProcessDetails, ProcessDetailsSource, ProcessIdentity};
+use pulse_core::details::{
+    DetailsQuery, OpenFile, Port, ProcessDetails, ProcessDetailsSource, ProcessIdentity,
+};
 use pulse_core::redact::sanitize_display;
+use pulse_core::time::Timestamp;
 
 use crate::fs::{FsSource, FsSourceExt};
 
@@ -22,6 +26,10 @@ use crate::fs::{FsSource, FsSourceExt};
 /// — число разыменований. Процессу с сотней тысяч дескрипторов иначе
 /// соответствует сотня тысяч syscall на одно нажатие клавиши.
 const FD_BUDGET: usize = 1_024;
+
+/// Журнал — контекст расследования, а не поток без границ.
+const JOURNAL_LINES: usize = 12;
+const JOURNAL_MAX_BYTES: usize = 16 * 1024;
 
 /// Чтение деталей процесса из `/proc`.
 #[derive(Debug)]
@@ -33,6 +41,10 @@ pub struct ProcDetails {
     file_limit: usize,
     /// Сколько дескрипторов вообще разрешено просмотреть.
     fd_budget: usize,
+    /// Чтение journald — явный opt-in: свободный текст может содержать секреты.
+    read_journal: bool,
+    clock_ticks: u64,
+    journalctl: PathBuf,
 }
 
 impl ProcDetails {
@@ -52,7 +64,23 @@ impl ProcDetails {
             proc_root,
             file_limit: 12,
             fd_budget: fd_budget.max(1),
+            read_journal: false,
+            clock_ticks: crate::clock_ticks_per_second(),
+            journalctl: PathBuf::from("journalctl"),
         }
+    }
+
+    /// Разрешает ограниченное чтение journald по запросу интерфейса.
+    #[must_use]
+    pub const fn with_journal(mut self, enabled: bool) -> Self {
+        self.read_journal = enabled;
+        self
+    }
+
+    #[cfg(test)]
+    fn with_journalctl(mut self, executable: PathBuf) -> Self {
+        self.journalctl = executable;
+        self
     }
 
     /// Время старта процесса или `None`, если `stat` не читается.
@@ -60,10 +88,131 @@ impl ProcDetails {
         let text = self.fs.read_opt(&root.join("stat"))?;
         crate::parse::parse_proc_stat(&text).map(|stat| stat.start_ticks)
     }
+
+    /// Нижняя граница журнала: не раньше запуска текущего экземпляра PID и не
+    /// раньше активной проблемы. Это исключает строки старого процесса после
+    /// переиспользования номера.
+    fn journal_since(&self, of: ProcessIdentity, requested: Option<Timestamp>) -> Timestamp {
+        let boot = self
+            .fs
+            .read_opt(&self.proc_root.join("stat"))
+            .and_then(|text| crate::parse::field(&text, "btime"))
+            .map(|seconds| (seconds.max(0.0) * 1000.0) as u64)
+            .unwrap_or(0);
+        let after_boot = of
+            .start_ticks
+            .saturating_mul(1_000)
+            .checked_div(self.clock_ticks.max(1))
+            .unwrap_or(0);
+        let started = Timestamp::from_millis(boot.saturating_add(after_boot));
+        requested.map_or(started, |since| since.max(started))
+    }
+
+    fn journal(&self, root: &Path, of: ProcessIdentity, query: DetailsQuery) -> JournalExcerpt {
+        if !query.journal {
+            return JournalExcerpt::default();
+        }
+        if !self.read_journal {
+            return JournalExcerpt {
+                status: Some("выключено: security.read_journal = false".to_string()),
+                ..JournalExcerpt::default()
+            };
+        }
+        let Some(cgroup) = self
+            .fs
+            .read_opt(&root.join("cgroup"))
+            .and_then(|text| crate::parse::parse_proc_cgroup(&text))
+        else {
+            return JournalExcerpt {
+                status: Some("cgroup процесса недоступна".to_string()),
+                ..JournalExcerpt::default()
+            };
+        };
+        let since = self.journal_since(of, query.since);
+        read_journalctl(&self.journalctl, &cgroup, since)
+    }
+}
+
+#[derive(Debug, Default)]
+struct JournalExcerpt {
+    lines: Vec<String>,
+    status: Option<String>,
+    truncated: bool,
+}
+
+fn read_journalctl(executable: &Path, cgroup: &str, since: Timestamp) -> JournalExcerpt {
+    let match_arg = format!("_SYSTEMD_CGROUP={cgroup}");
+    let since_arg = format!(
+        "@{}.{:03}",
+        since.as_millis() / 1_000,
+        since.as_millis() % 1_000
+    );
+    let lines_arg = format!("--lines={JOURNAL_LINES}");
+    let mut child = match Command::new(executable)
+        .args([
+            "--no-pager",
+            "--quiet",
+            "--boot",
+            "--output=short-iso-precise",
+            "--reverse",
+            &lines_arg,
+            "--since",
+            &since_arg,
+            &match_arg,
+        ])
+        .env("SYSTEMD_COLORS", "0")
+        .env("SYSTEMD_URLIFY", "0")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            return JournalExcerpt {
+                status: Some(format!("journalctl недоступен: {error}")),
+                ..JournalExcerpt::default()
+            };
+        }
+    };
+    let mut bytes = Vec::with_capacity(JOURNAL_MAX_BYTES.min(4_096));
+    let read = child.stdout.take().map_or_else(
+        || Err(io::Error::other("journalctl не открыл stdout")),
+        |stdout| {
+            stdout
+                .take((JOURNAL_MAX_BYTES + 1) as u64)
+                .read_to_end(&mut bytes)
+        },
+    );
+    let status = child.wait();
+    if let Err(error) = read {
+        return JournalExcerpt {
+            status: Some(format!("ошибка чтения journald: {error}")),
+            ..JournalExcerpt::default()
+        };
+    }
+    if !status.is_ok_and(|exit| exit.success()) {
+        return JournalExcerpt {
+            status: Some("journald отказал в чтении".to_string()),
+            ..JournalExcerpt::default()
+        };
+    }
+    let truncated = bytes.len() > JOURNAL_MAX_BYTES;
+    bytes.truncate(JOURNAL_MAX_BYTES);
+    let text = String::from_utf8_lossy(&bytes);
+    let lines = text
+        .lines()
+        .take(JOURNAL_LINES)
+        .map(sanitize_display)
+        .collect();
+    JournalExcerpt {
+        lines,
+        status: None,
+        truncated,
+    }
 }
 
 impl ProcessDetailsSource for ProcDetails {
-    fn details(&self, of: ProcessIdentity) -> ProcessDetails {
+    fn details(&self, of: ProcessIdentity, query: DetailsQuery) -> ProcessDetails {
         let root = self.proc_root.join(of.pid.to_string());
         let mut out = ProcessDetails::default();
 
@@ -104,6 +253,11 @@ impl ProcessDetailsSource for ProcDetails {
         if !socket_inodes.is_empty() {
             out.ports = listening_ports(self.fs.as_ref(), &root, &socket_inodes);
         }
+
+        let journal = self.journal(&root, of, query);
+        out.journal = journal.lines;
+        out.journal_status = journal.status;
+        out.journal_truncated = journal.truncated;
 
         // И после: чтение деталей - это десятки syscall, процесс мог умереть
         // посередине, а его номер достаться другому. Тогда собранная смесь
@@ -366,6 +520,7 @@ fn resolve_user(fs: &dyn FsSource, uid: u32) -> Option<String> {
 mod tests {
     use super::*;
     use crate::fs::FixtureFs;
+    use std::os::unix::fs::PermissionsExt;
 
     const STATUS: &str = "Name:\tnginx\nUid:\t33\t33\t33\t33\nGid:\t33\t33\t33\t33\n";
     const PASSWD: &str =
@@ -413,9 +568,72 @@ mod tests {
     }
 
     #[test]
+    fn journal_is_lazy_bounded_and_filtered_by_trusted_cgroup() {
+        let script = std::env::temp_dir().join(format!("pulse-journalctl-{}", std::process::id()));
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nfor arg in \"$@\"; do printf '%s\\n' \"$arg\"; done\nprintf '\\033[31mboom\\033[0m\\n'\n",
+        )
+        .expect("записать fake journalctl");
+        let mut permissions = std::fs::metadata(&script).expect("metadata").permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&script, permissions).expect("chmod");
+
+        let fs = fixture()
+            .file("/proc/stat", "btime 1700000000\n")
+            .file("/proc/42/cgroup", "0::/system.slice/nginx.service\n");
+        let source = ProcDetails::new(Arc::new(fs), PathBuf::from("/proc"))
+            .with_journal(true)
+            .with_journalctl(script.clone());
+        let details = source.details(
+            id(42),
+            DetailsQuery {
+                since: Some(Timestamp::from_millis(1_700_000_005_000)),
+                journal: true,
+            },
+        );
+        let _ = std::fs::remove_file(script);
+
+        assert!(
+            details
+                .journal
+                .iter()
+                .any(|line| line == "_SYSTEMD_CGROUP=/system.slice/nginx.service"),
+            "привязка только по trusted cgroup: {:?}",
+            details.journal
+        );
+        assert!(
+            details.journal.iter().any(|line| line.contains("boom")),
+            "текст журнала дошёл до деталей"
+        );
+        assert!(
+            details.journal.iter().all(|line| !line.contains('\u{1b}')),
+            "управляющие последовательности не доходят до терминала"
+        );
+    }
+
+    #[test]
+    fn journal_opt_in_does_not_run_a_command_when_disabled() {
+        let fs = fixture().file("/proc/42/cgroup", "0::/system.slice/nginx.service\n");
+        let source = ProcDetails::new(Arc::new(fs), PathBuf::from("/proc"))
+            .with_journalctl(PathBuf::from("/definitely/missing/journalctl"));
+        let details = source.details(
+            id(42),
+            DetailsQuery {
+                since: None,
+                journal: true,
+            },
+        );
+        assert_eq!(
+            details.journal_status.as_deref(),
+            Some("выключено: security.read_journal = false")
+        );
+    }
+
+    #[test]
     fn details_answer_user_exe_and_cwd() {
         let source = ProcDetails::new(Arc::new(fixture()), PathBuf::from("/proc"));
-        let details = source.details(id(42));
+        let details = source.details(id(42), DetailsQuery::default());
         assert_eq!(details.uid, Some(33));
         assert_eq!(details.user.as_deref(), Some("www-data"));
         assert_eq!(details.exe.as_deref(), Some("/usr/sbin/nginx"));
@@ -425,7 +643,7 @@ mod tests {
     #[test]
     fn files_are_regular_paths_and_count_is_total() {
         let source = ProcDetails::new(Arc::new(fixture()), PathBuf::from("/proc"));
-        let details = source.details(id(42));
+        let details = source.details(id(42), DetailsQuery::default());
         assert_eq!(details.fd_total, 7, "считаются все дескрипторы");
         let targets: Vec<&str> = details.files.iter().map(|f| f.target.as_str()).collect();
         assert_eq!(
@@ -443,7 +661,7 @@ mod tests {
     #[test]
     fn only_listening_sockets_of_this_process_become_ports() {
         let source = ProcDetails::new(Arc::new(fixture()), PathBuf::from("/proc"));
-        let details = source.details(id(42));
+        let details = source.details(id(42), DetailsQuery::default());
         let ports: Vec<(u16, &str)> = details
             .ports
             .iter()
@@ -486,7 +704,7 @@ mod tests {
             .link("/proc/50/fd/3", "socket:[555777]")
             .file("/proc/50/net/tcp", &table);
         let source = ProcDetails::new(Arc::new(fixture), PathBuf::from("/proc"));
-        let details = source.details(id(50));
+        let details = source.details(id(50), DetailsQuery::default());
 
         assert_eq!(
             details.ports,
@@ -508,7 +726,10 @@ mod tests {
             .link("/proc/7/fd/0", "/dev/null")
             .file("/proc/7/net/tcp", TCP);
         let source = ProcDetails::new(Arc::new(fixture), PathBuf::from("/proc"));
-        assert!(source.details(id(7)).ports.is_empty());
+        assert!(source
+            .details(id(7), DetailsQuery::default())
+            .ports
+            .is_empty());
     }
 
     #[test]
@@ -521,7 +742,7 @@ mod tests {
             .file("/etc/passwd", PASSWD)
             .denied("/proc/11/fd");
         let source = ProcDetails::new(Arc::new(fixture), PathBuf::from("/proc"));
-        let details = source.details(id(11));
+        let details = source.details(id(11), DetailsQuery::default());
 
         assert!(details.restricted, "отказ в правах обязан быть виден");
         assert!(details.files.is_empty());
@@ -538,7 +759,7 @@ mod tests {
     #[test]
     fn dead_process_is_not_reported_as_restricted() {
         let source = ProcDetails::new(Arc::new(FixtureFs::new()), PathBuf::from("/proc"));
-        let details = source.details(id(4243));
+        let details = source.details(id(4243), DetailsQuery::default());
         assert!(
             !details.restricted,
             "отсутствие процесса не является отказом в правах"
@@ -554,7 +775,7 @@ mod tests {
     #[test]
     fn reused_pid_yields_identity_change_instead_of_foreign_facts() {
         let source = ProcDetails::new(Arc::new(fixture()), PathBuf::from("/proc"));
-        let details = source.details(ProcessIdentity::new(42, START + 1));
+        let details = source.details(ProcessIdentity::new(42, START + 1), DetailsQuery::default());
 
         assert!(details.identity_changed);
         assert_eq!(details.exe, None, "чужой exe показывать нельзя");
@@ -573,7 +794,7 @@ mod tests {
         let counting = crate::test_support::CountingFs::new(Arc::new(fixture()));
         let source = ProcDetails::new(Arc::new(counting.clone()), PathBuf::from("/proc"));
 
-        let _ = source.details(ProcessIdentity::new(42, START + 1));
+        let _ = source.details(ProcessIdentity::new(42, START + 1), DetailsQuery::default());
         let counts = counting.counts();
 
         assert_eq!(
@@ -609,7 +830,7 @@ mod tests {
         let counting = crate::test_support::CountingFs::new(Arc::new(fs));
         let source =
             ProcDetails::with_budget(Arc::new(counting.clone()), PathBuf::from("/proc"), BUDGET);
-        let details = source.details(id(42));
+        let details = source.details(id(42), DetailsQuery::default());
         let counts = counting.counts();
 
         assert!(
@@ -634,7 +855,7 @@ mod tests {
     #[test]
     fn descriptor_scan_within_budget_is_not_truncated() {
         let source = ProcDetails::new(Arc::new(fixture()), PathBuf::from("/proc"));
-        let details = source.details(id(42));
+        let details = source.details(id(42), DetailsQuery::default());
         assert!(
             !details.fd_truncated,
             "семь дескрипторов в бюджет помещаются"
@@ -663,7 +884,10 @@ mod tests {
             .start_ticks;
 
         let source = ProcDetails::new(Arc::new(crate::fs::RealFs), PathBuf::from("/proc"));
-        let details = source.details(ProcessIdentity::new(pid, start_ticks));
+        let details = source.details(
+            ProcessIdentity::new(pid, start_ticks),
+            DetailsQuery::default(),
+        );
 
         assert!(
             !details.identity_changed,
@@ -691,7 +915,10 @@ mod tests {
         let source = ProcDetails::new(Arc::new(fixture), PathBuf::from("/proc"));
 
         assert!(
-            source.details(id(60)).ports.is_empty(),
+            source
+                .details(id(60), DetailsQuery::default())
+                .ports
+                .is_empty(),
             "порт из чужого namespace процессу не принадлежит"
         );
     }
@@ -708,7 +935,7 @@ mod tests {
             .link("/proc/9/cwd", "/tmp/\u{1b}[2Jcleared")
             .link("/proc/9/fd/0", evil);
         let source = ProcDetails::new(Arc::new(fixture), PathBuf::from("/proc"));
-        let details = source.details(id(9));
+        let details = source.details(id(9), DetailsQuery::default());
 
         let exe = details.exe.expect("exe");
         assert!(

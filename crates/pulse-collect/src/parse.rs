@@ -64,23 +64,57 @@ pub fn parse_pressure(text: &str) -> Pressure {
 /// `/proc/meminfo` (`MemTotal:       16316412 kB`), и для cgroup-файлов.
 #[must_use]
 pub fn field(text: &str, key: &str) -> Option<f64> {
+    let [value] = pick(text, [key]);
+    value
+}
+
+/// Несколько ключей файла вида `ключ значение` за один проход.
+///
+/// По каждому ключу ответ тот же, что у [`field`]: первая строка с этим
+/// ключом решает, её значение с учётом единиц или `None`, если значение не
+/// число. Нужна там, где файл читается на каждый объект каждый такт: шесть
+/// отдельных проходов по полусотне строк `/proc/<pid>/status` стоили заметную
+/// долю такта (PULSE-088).
+#[must_use]
+pub fn pick<const N: usize>(text: &str, keys: [&str; N]) -> [Option<f64>; N] {
+    let mut values = [None; N];
+    let mut decided = [false; N];
+    let mut open = N;
     for line in text.lines() {
-        let mut parts = line.split_whitespace();
-        let name = parts.next()?.trim_end_matches(':');
-        if name != key {
-            continue;
+        if open == 0 {
+            break;
         }
-        let raw = parts.next()?;
-        let value = raw.parse::<f64>().ok()?;
-        // Единицы: `kB` в meminfo — единственный распространённый случай.
-        let scale = match parts.next() {
-            Some("kB") | Some("KB") => 1024.0,
-            Some("mB") | Some("MB") => 1024.0 * 1024.0,
-            _ => 1.0,
+        // Файлы ядра — ASCII; обход без проверки Unicode-пробелов дешевле.
+        let mut parts = line.split_ascii_whitespace();
+        let Some(name) = parts.next() else {
+            continue;
         };
-        return Some(value * scale);
+        let name = name.trim_end_matches(':');
+        let slot = keys
+            .iter()
+            .zip(decided.iter_mut())
+            .zip(values.iter_mut())
+            .find(|((key, decided), _)| !**decided && **key == name);
+        let Some(((_, decided), value)) = slot else {
+            continue;
+        };
+        *decided = true;
+        open -= 1;
+        *value = scaled(&mut parts);
     }
-    None
+    values
+}
+
+/// Значение после ключа с учётом единиц.
+fn scaled<'a>(parts: &mut impl Iterator<Item = &'a str>) -> Option<f64> {
+    let value = parts.next()?.parse::<f64>().ok()?;
+    // Единицы: `kB` в meminfo — единственный распространённый случай.
+    let scale = match parts.next() {
+        Some("kB") | Some("KB") => 1024.0,
+        Some("mB") | Some("MB") => 1024.0 * 1024.0,
+        _ => 1.0,
+    };
+    Some(value * scale)
 }
 
 /// Все пары `ключ значение` файла.
@@ -538,6 +572,17 @@ mod tests {
         let text = "MemTotal:       16316412 kB\nMemAvailable:    8158206 kB\n";
         assert_eq!(field(text, "MemTotal"), Some(16_316_412.0 * 1024.0));
         assert_eq!(field(text, "Nope"), None);
+    }
+
+    #[test]
+    fn pick_decides_each_key_by_its_first_line() {
+        // Первая строка ключа решает даже с нечислом, пустая строка не
+        // обрывает проход, единицы применяются как в `field`.
+        let text = "VmRSS:\t  2048 kB\n\nbad x\nbad 7\nctx 5\nctx 9\n";
+        assert_eq!(
+            pick(text, ["ctx", "VmRSS", "bad", "none"]),
+            [Some(5.0), Some(2048.0 * 1024.0), None, None]
+        );
     }
 
     #[test]

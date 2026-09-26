@@ -1225,8 +1225,20 @@ fn process_details(
     let pulse_core::EntityKey::Process { pid, start_ticks } = entity.key else {
         return None;
     };
-    let details =
-        app.process_details(snapshot, pulse_core::ProcessIdentity::new(pid, start_ticks))?;
+    let since = snapshot
+        .problems
+        .iter()
+        .filter(|problem| problem.id.entity == entity.id)
+        .map(|problem| problem.since)
+        .min();
+    let details = app.process_details(
+        snapshot,
+        pulse_core::ProcessIdentity::new(pid, start_ticks),
+        pulse_core::DetailsQuery {
+            since,
+            journal: true,
+        },
+    )?;
     if details.is_empty() {
         return None;
     }
@@ -1256,6 +1268,16 @@ fn details_rows(details: &pulse_core::ProcessDetails) -> Vec<(&'static str, Stri
     }
     if let Some(cwd) = &details.cwd {
         rows.push(("cwd", cwd.clone()));
+    }
+    if let Some(status) = &details.journal_status {
+        rows.push(("journal", status.clone()));
+    } else {
+        for (index, line) in details.journal.iter().take(3).enumerate() {
+            rows.push((if index == 0 { "journal" } else { "↳" }, line.clone()));
+        }
+        if details.journal_truncated {
+            rows.push(("↳", "неполно: достигнут лимит 16 КиБ".to_string()));
+        }
     }
     rows
 }

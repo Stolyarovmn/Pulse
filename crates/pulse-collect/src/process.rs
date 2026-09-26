@@ -16,7 +16,7 @@
 //! Файл `environ` не читается никогда: он почти всегда содержит секреты, а
 //! диагностической ценности не даёт.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -64,6 +64,45 @@ struct ProcPrev {
     static_labels: Labels,
     /// Лимит открытых файлов из `/proc/<pid>/limits`.
     fd_limit: Option<f64>,
+}
+
+/// Поля `/proc/<pid>/status`, нужные каждому такту.
+///
+/// Разбираются одним проходом [`parse::pick`]: файл читается на каждый
+/// процесс каждый такт, и отдельный проход на каждое поле стоил заметную долю
+/// такта (PULSE-088).
+#[derive(Clone, Copy, Debug, Default)]
+struct StatusFields {
+    vm_size: Option<f64>,
+    vm_rss: Option<f64>,
+    rss_file: Option<f64>,
+    rss_shmem: Option<f64>,
+    ctx_voluntary: Option<f64>,
+    ctx_involuntary: Option<f64>,
+}
+
+impl StatusFields {
+    fn parse(text: &str) -> Self {
+        let [vm_size, vm_rss, rss_file, rss_shmem, ctx_voluntary, ctx_involuntary] = parse::pick(
+            text,
+            [
+                "VmSize",
+                "VmRSS",
+                "RssFile",
+                "RssShmem",
+                "voluntary_ctxt_switches",
+                "nonvoluntary_ctxt_switches",
+            ],
+        );
+        StatusFields {
+            vm_size,
+            vm_rss,
+            rss_file,
+            rss_shmem,
+            ctx_voluntary,
+            ctx_involuntary,
+        }
+    }
 }
 
 /// Коллектор процессов.
@@ -130,11 +169,20 @@ impl ProcessCollector {
         self.redactions
     }
 
+    /// Путь `<proc_root>/<pid>/<file>` одним выделением памяти.
+    fn path(&self, pid: &str, file: &str) -> PathBuf {
+        let root = self.proc_root.as_os_str().len();
+        let mut path = PathBuf::with_capacity(root + pid.len() + file.len() + 2);
+        path.push(&self.proc_root);
+        path.push(pid);
+        path.push(file);
+        path
+    }
+
     /// Файлы `/proc/<pid>/*`, которые читает коллектор, выдаются ядром одной
     /// записью (`single_open`), поэтому годится [`FsSourceExt::read_single_opt`].
     fn read(&self, pid: &str, file: &str) -> Option<String> {
-        self.fs
-            .read_single_opt(&self.proc_root.join(pid).join(file))
+        self.fs.read_single_opt(&self.path(pid, file))
     }
 
     fn read_stat(&self, pid: &str) -> Option<ProcStat> {
@@ -177,10 +225,7 @@ impl ProcessCollector {
         }
 
         if self.security.read_cmdline {
-            if let Ok(raw) = self
-                .fs
-                .read(&self.proc_root.join(pid).join("cmdline"), CMDLINE_CAP)
-            {
+            if let Ok(raw) = self.fs.read(&self.path(pid, "cmdline"), CMDLINE_CAP) {
                 let argv = parse_cmdline(&raw);
                 if !argv.is_empty() {
                     let redacted = redact_argv(
@@ -194,7 +239,7 @@ impl ProcessCollector {
             }
         }
 
-        if let Ok(target) = self.fs.read_link(&self.proc_root.join(pid).join("exe")) {
+        if let Ok(target) = self.fs.read_link(&self.path(pid, "exe")) {
             labels.set("exe", target.to_string_lossy().into_owned());
         }
 
@@ -218,15 +263,12 @@ impl ProcessCollector {
     /// Без `mm` (поток ядра, зомби) в `status` нет ни `VmSize`, ни `Rss*`, а
     /// `statm` печатает нули — ответ `0`, как и раньше. На старом ядре без
     /// `RssFile` и при нечитаемом `status` остаётся прежний путь через `statm`.
-    fn shared_bytes(&self, pid: &str, status: Option<&str>) -> Option<f64> {
-        if let Some(text) = status {
-            if let (Some(file), Some(shmem)) = (
-                parse::field(text, "RssFile"),
-                parse::field(text, "RssShmem"),
-            ) {
+    fn shared_bytes(&self, pid: &str, status: Option<&StatusFields>) -> Option<f64> {
+        if let Some(fields) = status {
+            if let (Some(file), Some(shmem)) = (fields.rss_file, fields.rss_shmem) {
                 return Some(file + shmem);
             }
-            if parse::field(text, "VmSize").is_none() {
+            if fields.vm_size.is_none() {
                 return Some(0.0);
             }
         }
@@ -307,7 +349,7 @@ impl Collector for ProcessCollector {
 
         let host = ctx.host();
         let interval = ctx.interval_secs().max(0.001);
-        let mut seen: Vec<ProcKey> = Vec::new();
+        let mut seen: HashSet<ProcKey> = HashSet::with_capacity(pids.len());
         let mut threads_total = 0_f64;
         // Все числовые записи `/proc`, найденные обходом: это population
         // счётчика хоста. `seen` — подмножество, пережившее проверку
@@ -327,28 +369,32 @@ impl Collector for ProcessCollector {
                 start_ticks: stat.start_ticks,
             };
             // Уже известный процесс: статические данные берём из кэша и
-            // экономим три обращения к ядру на каждом такте.
-            let cached = self.previous.get(&key).cloned();
+            // экономим три обращения к ядру на каждом такте. Запись забирается,
+            // а не копируется: ниже она вставляется заново, а процесс, не
+            // переживший проверку гонки, потерял бы её в конце такта и так.
+            let cached = self.previous.remove(&key);
 
-            let status = self.read(&pid_str, "status");
+            let status_text = self.read(&pid_str, "status");
+            let status = status_text.as_deref().map(StatusFields::parse);
             // До проверки гонки, как и прежнее чтение `statm`: запасной путь
             // обязан попадать под ту же проверку идентичности.
-            let shared = self.shared_bytes(&pid_str, status.as_deref());
+            let shared = self.shared_bytes(&pid_str, status.as_ref());
             let io = self.read(&pid_str, "io");
             let oom_score = self.read(&pid_str, "oom_score");
             // Счёт без материализации: список дескрипторов сервера с тысячами
             // соединений нужен как число, а вектор имён — только цена.
             let fd_count = self
                 .fs
-                .count_dir(&self.proc_root.join(&pid_str).join("fd"))
+                .open_fd_count(&self.path(&pid_str, "fd"))
                 .map(|count| count as f64)
                 .ok();
             let cgroup = self.cgroup_entity(ctx, &pid_str);
 
-            let (static_labels, fd_limit) = match &cached {
-                Some(previous) => (previous.static_labels.clone(), previous.fd_limit),
+            let previous_cpu_ticks = cached.as_ref().map(|previous| previous.cpu_ticks);
+            let (static_labels, fd_limit) = match cached {
+                Some(previous) => (previous.static_labels, previous.fd_limit),
                 None => (
-                    self.static_labels_for(&pid_str, status.as_deref()),
+                    self.static_labels_for(&pid_str, status_text.as_deref()),
                     self.fd_limit_for(&pid_str),
                 ),
             };
@@ -375,8 +421,8 @@ impl Collector for ProcessCollector {
             }
 
             // Бюджет уже применён при обходе каталога, а счёт обработанных
-            // процессов равен длине `seen`.
-            seen.push(key);
+            // процессов равен размеру `seen`.
+            let _ = seen.insert(key);
             threads_total += stat.num_threads as f64;
 
             let parent = cgroup.unwrap_or(host);
@@ -412,8 +458,8 @@ impl Collector for ProcessCollector {
                 ids::PROC_CPU_SYSTEM_SECONDS,
                 stat.stime_ticks as f64 / self.clock_ticks,
             );
-            if let Some(previous) = &cached {
-                let delta = cpu_ticks.saturating_sub(previous.cpu_ticks) as f64;
+            if let Some(previous_cpu_ticks) = previous_cpu_ticks {
+                let delta = cpu_ticks.saturating_sub(previous_cpu_ticks) as f64;
                 let cores = delta / self.clock_ticks / interval;
                 ctx.sample(entity, ids::PROC_CPU_CORES, cores);
             }
@@ -429,8 +475,7 @@ impl Collector for ProcessCollector {
             // Память: VmRSS точнее, чем rss_pages, но доступен не всегда.
             let page_size = self.page_size;
             let rss = status
-                .as_deref()
-                .and_then(|text| parse::field(text, "VmRSS"))
+                .and_then(|fields| fields.vm_rss)
                 .unwrap_or(stat.rss_pages as f64 * page_size);
             ctx.sample(entity, ids::PROC_RSS, rss);
             ctx.sample(entity, ids::PROC_VMS, stat.vsize_bytes as f64);
@@ -445,24 +490,26 @@ impl Collector for ProcessCollector {
             ctx.sample(entity, ids::PROC_STATE_CODE, Self::state_code(stat.state));
 
             if let Some(text) = io.as_deref() {
-                for (key_name, metric) in [
-                    ("read_bytes", ids::PROC_IO_READ_BYTES),
-                    ("write_bytes", ids::PROC_IO_WRITE_BYTES),
-                    ("syscr", ids::PROC_IO_READ_SYSCALLS),
-                    ("syscw", ids::PROC_IO_WRITE_SYSCALLS),
-                ] {
-                    if let Some(value) = parse::field(text, key_name) {
+                let values = parse::pick(text, ["read_bytes", "write_bytes", "syscr", "syscw"]);
+                let metrics = [
+                    ids::PROC_IO_READ_BYTES,
+                    ids::PROC_IO_WRITE_BYTES,
+                    ids::PROC_IO_READ_SYSCALLS,
+                    ids::PROC_IO_WRITE_SYSCALLS,
+                ];
+                for (value, metric) in values.into_iter().zip(metrics) {
+                    if let Some(value) = value {
                         ctx.sample(entity, metric, value);
                     }
                 }
             }
 
-            if let Some(text) = status.as_deref() {
-                for (key_name, metric) in [
-                    ("voluntary_ctxt_switches", ids::PROC_CTX_VOLUNTARY),
-                    ("nonvoluntary_ctxt_switches", ids::PROC_CTX_INVOLUNTARY),
+            if let Some(fields) = status {
+                for (value, metric) in [
+                    (fields.ctx_voluntary, ids::PROC_CTX_VOLUNTARY),
+                    (fields.ctx_involuntary, ids::PROC_CTX_INVOLUNTARY),
                 ] {
-                    if let Some(value) = parse::field(text, key_name) {
+                    if let Some(value) = value {
                         ctx.sample(entity, metric, value);
                     }
                 }
@@ -543,6 +590,7 @@ mod tests {
             allow_actions: false,
             read_cmdline: true,
             redact_high_entropy: false,
+            read_journal: false,
         }
     }
 

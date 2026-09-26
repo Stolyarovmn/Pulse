@@ -243,10 +243,10 @@ fn run_tui(config: &PulseConfig, demo: bool) -> Result<(), Box<dyn Error>> {
 
     // Детали процесса читаются по требованию тем же источником файловой
     // системы, что и коллекторы: одна точка правды о `proc_root`.
-    let details = std::sync::Arc::new(pulse_collect::details::ProcDetails::new(
-        fs,
-        config.general.proc_root.clone(),
-    ));
+    let details = std::sync::Arc::new(
+        pulse_collect::details::ProcDetails::new(fs, config.general.proc_root.clone())
+            .with_journal(config.security.read_journal && !demo),
+    );
     let result = pulse_tui::run(config, runtime.source(), runtime.history(), details, demo);
     if let Some(handle) = exporter {
         handle.shutdown();

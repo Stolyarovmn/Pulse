@@ -181,7 +181,13 @@ impl Branch {
     pub const fn needs_details(self) -> bool {
         matches!(
             self,
-            Self::Exe | Self::User | Self::Cwd | Self::Ports | Self::Files
+            Self::Exe
+                | Self::User
+                | Self::Cwd
+                | Self::Ports
+                | Self::Files
+                | Self::Log
+                | Self::Journal
         )
     }
 }
@@ -509,14 +515,8 @@ fn values_for(
         Branch::Limits => (limits(snapshot, entity), None),
         Branch::Files => (files(details, owner_pid, note), None),
         Branch::Procs => (procs(snapshot, entity), None),
-        Branch::Log => (
-            vec!["нет источника в этой сборке".to_string()],
-            Some(Severity::Info),
-        ),
-        Branch::Journal => (
-            vec!["нет источника в этой сборке".to_string()],
-            Some(Severity::Info),
-        ),
+        Branch::Log => (log_files(details, owner_pid, note), None),
+        Branch::Journal => (journal(details, owner_pid, note), None),
         Branch::Problems => problems(snapshot, entity),
         Branch::Resources => (resources(snapshot, entity), None),
     }
@@ -628,6 +628,66 @@ fn files(
     }];
     for path in regular.iter().take(MAX_VALUES - 1) {
         out.push(elide_path(path));
+    }
+    if let Some(note) = note {
+        out.push(note);
+    }
+    out
+}
+
+/// Файлы журнала, которые процесс действительно держит открытыми.
+///
+/// Это указатель, где искать, а не чтение файла: читать Docker `json-file`
+/// напрямую запрещает его собственный контракт.
+fn log_files(
+    details: Option<&ProcessDetails>,
+    owner_pid: Option<i32>,
+    note: Option<String>,
+) -> Vec<String> {
+    let Some(details) = details else {
+        return vec![missing(owner_pid)];
+    };
+    let mut out: Vec<String> = details
+        .files
+        .iter()
+        .filter(|file| {
+            let path = file.target.as_str();
+            file.is_regular()
+                && (path.contains("/log/") || path.ends_with(".log") || path.ends_with("-json.log"))
+        })
+        .take(MAX_VALUES)
+        .map(|file| elide_path(&file.target))
+        .collect();
+    if out.is_empty() {
+        out.push(if details.fd_truncated {
+            "не найдено в просмотренной части fd".to_string()
+        } else {
+            "открытых log-файлов нет".to_string()
+        });
+    }
+    if let Some(note) = note {
+        out.push(note);
+    }
+    out
+}
+
+fn journal(
+    details: Option<&ProcessDetails>,
+    owner_pid: Option<i32>,
+    note: Option<String>,
+) -> Vec<String> {
+    let Some(details) = details else {
+        return vec![missing(owner_pid)];
+    };
+    let mut out = if let Some(status) = &details.journal_status {
+        vec![status.clone()]
+    } else if details.journal.is_empty() {
+        vec!["в выбранном окне записей нет".to_string()]
+    } else {
+        details.journal.iter().take(MAX_VALUES).cloned().collect()
+    };
+    if details.journal_truncated {
+        out.push("неполно: достигнут лимит 16 КиБ".to_string());
     }
     if let Some(note) = note {
         out.push(note);
@@ -1434,6 +1494,38 @@ mod tests {
         );
         let state = state_with(&[Branch::Ports]);
         assert!(state.needs_details(), "порты требуют чтения деталей");
+        let state = state_with(&[Branch::Journal]);
+        assert!(
+            state.needs_details(),
+            "только раскрытый journal запускает ограниченный запрос"
+        );
+    }
+
+    #[test]
+    fn log_and_journal_branches_show_measured_sources() {
+        let details = ProcessDetails {
+            fd_total: 2,
+            files: vec![
+                pulse_core::OpenFile {
+                    fd: 3,
+                    target: "/var/log/nginx/error.log".to_string(),
+                },
+                pulse_core::OpenFile {
+                    fd: 4,
+                    target: "/srv/data.bin".to_string(),
+                },
+            ],
+            journal: vec!["2026-09-26 nginx[7]: timeout".to_string()],
+            ..ProcessDetails::default()
+        };
+        assert_eq!(
+            log_files(Some(&details), Some(7), None),
+            vec!["/var/…/error.log"]
+        );
+        assert_eq!(
+            journal(Some(&details), Some(7), None),
+            vec!["2026-09-26 nginx[7]: timeout"]
+        );
     }
 
     fn look(boxes: bool) -> Look {

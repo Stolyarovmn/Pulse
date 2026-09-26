@@ -452,6 +452,7 @@ impl App {
         &self,
         snapshot: &Snapshot,
         of: pulse_core::ProcessIdentity,
+        query: pulse_core::DetailsQuery,
     ) -> Option<ProcessDetails> {
         let source = self.details.as_ref()?;
         // Смена такта обязана сбрасывать кэш: процесс мог открыть файл или
@@ -460,7 +461,11 @@ impl App {
             self.details_cache.borrow_mut().clear();
             self.details_tick.set(Some(snapshot.tick));
         }
-        Some(self.details_cache.borrow_mut().get(source.as_ref(), of))
+        Some(
+            self.details_cache
+                .borrow_mut()
+                .get(source.as_ref(), of, query),
+        )
     }
 
     /// Набор иконок категорий в пайпе: приходит из настройки `ui.icons`.
@@ -518,7 +523,22 @@ impl App {
             return None;
         }
         let (_, identity) = crate::pipe::main_process(snapshot, entity)?;
-        self.process_details(snapshot, identity)
+        let journal = state.expanded.contains(&crate::pipe::Branch::Journal);
+        let since = journal
+            .then(|| {
+                snapshot
+                    .problems
+                    .iter()
+                    .filter(|problem| problem.id.entity == entity)
+                    .map(|problem| problem.since)
+                    .min()
+            })
+            .flatten();
+        self.process_details(
+            snapshot,
+            identity,
+            pulse_core::DetailsQuery { since, journal },
+        )
     }
 
     /// Заголовок отражает overlay/Inspector, который реально видит оператор.

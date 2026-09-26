@@ -68,6 +68,16 @@ pub struct ProcessDetails {
     /// Признак отличает «столько и есть» от «дальше не смотрели»: без него
     /// отсутствующий порт читался бы как «процесс не слушает».
     pub fd_truncated: bool,
+    /// Последние строки journald, привязанные к cgroup процесса.
+    ///
+    /// Читаются только по запросу Inspector/pipe, не попадают в историю и
+    /// экспорт. Каждая строка уже санитизирована источником.
+    pub journal: Vec<String>,
+    /// Почему журнал недоступен или выключен. `None` означает успешный запрос,
+    /// в том числе журнал без строк.
+    pub journal_status: Option<String>,
+    /// Вывод достиг жёсткого лимита байт и потому может быть неполным.
+    pub journal_truncated: bool,
     /// Процесс с этим PID сменился, пока читались детали.
     ///
     /// Ядро переиспользует номера, а чтение деталей — это десятки отдельных
@@ -85,6 +95,15 @@ pub struct ProcessIdentity {
     pub start_ticks: u64,
 }
 
+/// Какие дорогие детали нужны текущему кадру.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct DetailsQuery {
+    /// Начало окна активной проблемы; `None` — с запуска процесса.
+    pub since: Option<crate::time::Timestamp>,
+    /// Выполнить ограниченный запрос journald.
+    pub journal: bool,
+}
+
 impl ProcessIdentity {
     #[must_use]
     pub const fn new(pid: i32, start_ticks: u64) -> Self {
@@ -99,11 +118,14 @@ impl ProcessDetails {
         !self.restricted
             && !self.fd_truncated
             && !self.identity_changed
+            && !self.journal_truncated
             && self.user.is_none()
             && self.exe.is_none()
             && self.cwd.is_none()
             && self.files.is_empty()
             && self.ports.is_empty()
+            && self.journal.is_empty()
+            && self.journal_status.is_none()
             && self.fd_total == 0
     }
 
@@ -150,7 +172,7 @@ impl ProcessDetails {
 /// Трейт, а не свободная функция: интерфейс не должен знать о файловой системе,
 /// а тесты обязаны подставлять фикстуру без `/proc`.
 pub trait ProcessDetailsSource: Send + Sync + std::fmt::Debug {
-    fn details(&self, of: ProcessIdentity) -> ProcessDetails;
+    fn details(&self, of: ProcessIdentity, query: DetailsQuery) -> ProcessDetails;
 }
 
 /// Кэш деталей: одно чтение на процесс, пока снимок не сменился.
@@ -159,7 +181,7 @@ pub trait ProcessDetailsSource: Send + Sync + std::fmt::Debug {
 /// то есть нажатие любой клавиши стоило бы десятки syscall.
 #[derive(Clone, Debug, Default)]
 pub struct DetailsCache {
-    entries: HashMap<ProcessIdentity, ProcessDetails>,
+    entries: HashMap<(ProcessIdentity, DetailsQuery), ProcessDetails>,
 }
 
 impl DetailsCache {
@@ -169,12 +191,14 @@ impl DetailsCache {
         &mut self,
         source: &dyn ProcessDetailsSource,
         of: ProcessIdentity,
+        query: DetailsQuery,
     ) -> ProcessDetails {
-        if let Some(cached) = self.entries.get(&of) {
+        let key = (of, query);
+        if let Some(cached) = self.entries.get(&key) {
             return cached.clone();
         }
-        let details = source.details(of);
-        let _ = self.entries.insert(of, details.clone());
+        let details = source.details(of, query);
+        let _ = self.entries.insert(key, details.clone());
         details
     }
 
@@ -230,7 +254,7 @@ mod tests {
     }
 
     impl ProcessDetailsSource for Counting {
-        fn details(&self, of: ProcessIdentity) -> ProcessDetails {
+        fn details(&self, of: ProcessIdentity, _query: DetailsQuery) -> ProcessDetails {
             let _ = self.calls.fetch_add(1, Ordering::Relaxed);
             ProcessDetails {
                 uid: Some(of.pid as u32),
@@ -247,13 +271,46 @@ mod tests {
     fn cache_reads_once_per_identity() {
         let source = Counting::default();
         let mut cache = DetailsCache::default();
-        assert_eq!(cache.get(&source, id(1, 100)).uid, Some(1));
-        assert_eq!(cache.get(&source, id(1, 100)).uid, Some(1));
-        let _ = cache.get(&source, id(2, 100));
+        assert_eq!(
+            cache.get(&source, id(1, 100), DetailsQuery::default()).uid,
+            Some(1)
+        );
+        assert_eq!(
+            cache.get(&source, id(1, 100), DetailsQuery::default()).uid,
+            Some(1)
+        );
+        let _ = cache.get(&source, id(2, 100), DetailsQuery::default());
         assert_eq!(
             source.calls.load(Ordering::Relaxed),
             2,
             "повторный запрос того же процесса не читает /proc снова"
+        );
+    }
+
+    #[test]
+    fn cache_separates_problem_windows() {
+        let source = Counting::default();
+        let mut cache = DetailsCache::default();
+        let _ = cache.get(
+            &source,
+            id(1, 100),
+            DetailsQuery {
+                since: Some(crate::time::Timestamp::from_millis(1_000)),
+                journal: true,
+            },
+        );
+        let _ = cache.get(
+            &source,
+            id(1, 100),
+            DetailsQuery {
+                since: Some(crate::time::Timestamp::from_millis(2_000)),
+                journal: true,
+            },
+        );
+        assert_eq!(
+            source.calls.load(Ordering::Relaxed),
+            2,
+            "другое окно проблемы требует другой выборки журнала"
         );
     }
 
@@ -263,8 +320,8 @@ mod tests {
     fn cache_separates_incarnations_of_one_pid() {
         let source = Counting::default();
         let mut cache = DetailsCache::default();
-        let _ = cache.get(&source, id(1, 100));
-        let _ = cache.get(&source, id(1, 200));
+        let _ = cache.get(&source, id(1, 100), DetailsQuery::default());
+        let _ = cache.get(&source, id(1, 200), DetailsQuery::default());
         assert_eq!(
             source.calls.load(Ordering::Relaxed),
             2,
@@ -276,9 +333,9 @@ mod tests {
     fn cache_clear_forces_reread() {
         let source = Counting::default();
         let mut cache = DetailsCache::default();
-        let _ = cache.get(&source, id(1, 100));
+        let _ = cache.get(&source, id(1, 100), DetailsQuery::default());
         cache.clear();
-        let _ = cache.get(&source, id(1, 100));
+        let _ = cache.get(&source, id(1, 100), DetailsQuery::default());
         assert_eq!(
             source.calls.load(Ordering::Relaxed),
             2,
