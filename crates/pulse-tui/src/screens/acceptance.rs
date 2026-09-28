@@ -661,9 +661,9 @@ fn state_glyph_legend_maps_sectors_to_their_classes() {
         assert!(symbol.is_some(), "нет подписи {calm}:\n{text}");
         assert_ne!(symbol, Some(critical_symbol), "{calm} не критичен:\n{text}");
     }
-    // Счётчик проблем уже есть в шапке (`▲1`); под вердиктом — пояснение.
+    // Проблема есть, но измеренные доли близки: не выдумываем dominant resource.
     assert!(
-        text.contains("critical state · centered"),
+        text.contains("resources balanced"),
         "пояснение к вердикту:\n{text}"
     );
 }
@@ -1185,12 +1185,52 @@ fn settings_switch_language_and_nerd_icons_in_place() {
     assert_eq!(app.language, pulse_core::config::Language::Russian);
     assert_eq!(app.icons, pulse_core::config::IconSet::Nerd);
     let overview = joined(120, 30, &snapshot, &mut app);
-    assert!(overview.contains("ОБЗОР"), "{overview}");
+    assert!(overview.contains("OVERVIEW"), "{overview}");
     assert!(overview.contains("СОСТОЯНИЕ"), "{overview}");
-    assert!(!overview.contains("OVERVIEW"), "{overview}");
+    assert!(overview.contains("MEM"), "{overview}");
     assert!(
         overview.contains(crate::icons::Icon::Live.glyph(pulse_core::config::IconSet::Nerd)),
         "Nerd набор действует вне Settings: {overview}"
+    );
+}
+
+#[test]
+fn russian_ui_keeps_observability_terms_canonical() {
+    let snapshot = healthy();
+    let mut app = App::default().with_language(pulse_core::config::Language::Russian);
+    let overview = joined(180, 40, &snapshot, &mut app);
+    for required in [
+        "LIVE",
+        " up ",
+        "OVERVIEW",
+        "MEM",
+        "PSI MEM",
+        "IO WAIT",
+        "RECENT CHANGES",
+        "TOP CONSUMERS",
+        "стартовый снимок:",
+    ] {
+        assert!(overview.contains(required), "нет {required:?}:\n{overview}");
+    }
+    for forbidden in ["ЭФИР", "аптайм", " ПАМ ", "база:"] {
+        assert!(
+            !overview.contains(forbidden),
+            "лишний перевод {forbidden:?}:\n{overview}"
+        );
+    }
+
+    app.screen = Screen::Timeline;
+    let timeline = joined(180, 40, &snapshot, &mut app);
+    assert!(timeline.contains("TIMELINE"), "{timeline}");
+    assert!(timeline.contains("LIVE"), "{timeline}");
+    assert!(timeline.contains("MEM"), "{timeline}");
+    let boundary = timeline
+        .lines()
+        .find(|line| line.contains("наблюдение началось"))
+        .expect("граница наблюдения");
+    assert!(
+        boundary.contains("LIVE"),
+        "правая граница Timeline использует LIVE: {boundary}"
     );
 }
 
@@ -1230,7 +1270,7 @@ fn timeline_fresh_baseline_looks_like_time_machine() {
     app.pane = Pane::Story;
     let text = joined(180, 40, &snapshot, &mut app);
     for required in [
-        "TIME MACHINE",
+        "TIMELINE",
         "observation started",
         "NOW",
         "STATE",
@@ -2130,14 +2170,11 @@ fn problem_evidence_shows_its_trend_from_history() {
         trend.chars().any(|ch| "▁▂▃▄▅▆▇█".contains(ch)),
         "форма под доказательством: {trend}"
     );
-    assert!(
-        trend.contains("peak 30%"),
-        "пик в единицах метрики: {trend}"
-    );
+    assert!(trend.contains("max 30%"), "пик в единицах метрики: {trend}");
 
     let without = render(None);
     assert!(
-        !without.contains("peak "),
+        !without.contains("max "),
         "без истории строки тренда нет:\n{without}"
     );
 }

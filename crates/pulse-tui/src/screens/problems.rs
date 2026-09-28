@@ -346,10 +346,7 @@ fn render_detail(
                 theme.text(),
             ),
             Span::raw("  "),
-            Span::styled(
-                format!("consecutive ticks: {}", problem.streak),
-                theme.dim(),
-            ),
+            Span::styled(format!("checks: {}", problem.streak), theme.dim()),
         ]));
     }
 
@@ -375,7 +372,11 @@ pub(crate) fn evidence_trend(
     let window = format_duration(std::time::Duration::from_millis(crate::trend::WINDOW_MS));
     if !trend.is_measured() {
         return Some(Line::from(Span::styled(
-            format!("  {window}  collecting history"),
+            if theme.language == pulse_core::config::Language::Russian {
+                format!("  {window}  сбор истории")
+            } else {
+                format!("  {window}  collecting history")
+            },
             theme.dim(),
         )));
     }
@@ -384,7 +385,7 @@ pub(crate) fn evidence_trend(
         Span::styled(trend.lane, theme.text()),
         Span::styled(
             format!(
-                "  peak {}  avg {}",
+                "  max {}  avg {}",
                 crate::format::metric_value(key.metric, trend.peak),
                 crate::format::metric_value(key.metric, trend.mean)
             ),

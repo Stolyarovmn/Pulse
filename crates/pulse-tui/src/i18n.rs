@@ -41,9 +41,9 @@ pub fn translate(language: Language, text: &str) -> Cow<'_, str> {
         "STATE" => "СОСТОЯНИЕ",
         "ATTENTION" => "ВНИМАНИЕ",
         "SIGNALS" => "СИГНАЛЫ",
-        "RECENT CHANGES" => "ПОСЛЕДНИЕ ИЗМЕНЕНИЯ",
-        "RELEVANT ENTITIES" => "ЗНАЧИМЫЕ ОБЪЕКТЫ",
-        "KEY ENTITIES" => "КЛЮЧЕВЫЕ ОБЪЕКТЫ",
+        "RECENT CHANGES" => "RECENT CHANGES",
+        "RELEVANT ENTITIES" => "TOP CONSUMERS",
+        "KEY ENTITIES" => "KEY OBJECTS",
         "SELECTED" => "ВЫБРАНО",
         "RELEVANCE" => "ЗНАЧИМОСТЬ",
         "ENTITY LIST" => "СПИСОК ОБЪЕКТОВ",
@@ -57,9 +57,9 @@ pub fn translate(language: Language, text: &str) -> Cow<'_, str> {
         "AFFECTED" => "ЗАТРОНУТО",
         "RECENT" => "НЕДАВНО",
         "STORY" => "ИСТОРИЯ",
-        "RAW EVENTS" => "СЫРЫЕ СОБЫТИЯ",
+        "RAW EVENTS" => "ВСЕ СОБЫТИЯ",
         "SNAPSHOT / DETAILS" => "СНИМОК / ДЕТАЛИ",
-        "BASELINE" => "БАЗОВАЯ ТОЧКА",
+        "BASELINE" => "BASELINE",
         "EVENTS" => "СОБЫТИЯ",
         "TRAIL" => "СЛЕД",
         "CASE" => "ДЕЛО",
@@ -72,7 +72,7 @@ pub fn translate(language: Language, text: &str) -> Cow<'_, str> {
         "NO DATA" => "НЕТ ДАННЫХ",
         "FUNCTION LOST" => "ФУНКЦИЯ ПОТЕРЯНА",
         "NAME" => "ИМЯ",
-        "MEM" => "ПАМ",
+        "MEM" => "MEM",
         "KIND" => "ВИД",
         "OWNER" => "ВЛАДЕЛЕЦ",
         "TREND" => "ТРЕНД",
@@ -84,10 +84,10 @@ pub fn translate(language: Language, text: &str) -> Cow<'_, str> {
         "Off" => "Выкл",
         "Unicode" => "Unicode",
         "Nerd Font" => "Nerd Font",
-        "LIVE" => "ЭФИР",
+        "LIVE" => "LIVE",
         "PAUSED" => "ПАУЗА",
-        "HISTORY" => "ИСТОРИЯ",
-        "HIST" => "ИСТ",
+        "HISTORY" => "HISTORY",
+        "HIST" => "HIST",
         "NOW" => "СЕЙЧАС",
         "DEMO" => "ДЕМО",
         // Палитра команд и справка.
@@ -111,7 +111,7 @@ pub fn translate(language: Language, text: &str) -> Cow<'_, str> {
         "Set mark A" => "Поставить метку A",
         "Set mark B" => "Поставить метку B",
         "Semantic A/B diff" => "Смысловая разница A/B",
-        "Raw events" => "Сырые события",
+        "Raw events" => "Все события",
         "Incident story" => "История инцидента",
         "Overview" => "Обзор",
         "Problems" => "Проблемы",
@@ -144,7 +144,7 @@ pub fn translate(language: Language, text: &str) -> Cow<'_, str> {
         "comparison end" => "конец сравнения",
         "what changed between the marks" => "что изменилось между метками",
         "secondary stream of every observation" => "вторичный поток всех наблюдений",
-        "back from raw events" => "назад из сырых событий",
+        "back from raw events" => "назад из всех событий",
         "rail, story, snapshot" => "ось, история, снимок",
         "system state and relevant entities" => "состояние системы и значимые объекты",
         "open problems with evidence" => "открытые проблемы с доказательствами",
@@ -220,7 +220,7 @@ pub fn translate(language: Language, text: &str) -> Cow<'_, str> {
                 .strip_prefix("baseline: ")
                 .and_then(|rest| rest.strip_suffix(" entities"))
             {
-                return Cow::Owned(format!("база: {count} объектов"));
+                return Cow::Owned(format!("стартовый снимок: {count} объектов"));
             }
             for (prefix, replacement) in [
                 ("SELECTED / ", "ВЫБРАНО / "),

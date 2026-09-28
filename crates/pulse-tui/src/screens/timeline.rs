@@ -320,7 +320,7 @@ fn render_rail(
                 if app.timeline.time_cursor.is_some() {
                     crate::i18n::choose(theme.language, "cursor", "курсор")
                 } else {
-                    crate::i18n::choose(theme.language, "live", "эфир")
+                    "LIVE"
                 },
                 theme.strong(),
             ),
@@ -379,7 +379,7 @@ fn render_state_river(
         spans.push(Span::styled(
             if theme.language == pulse_core::config::Language::Russian {
                 format!(
-                    "наблюдается {} · собирается история состояния",
+                    "window {} · recording history",
                     pulse_core::time::format_duration(observation(snapshot))
                 )
             } else {

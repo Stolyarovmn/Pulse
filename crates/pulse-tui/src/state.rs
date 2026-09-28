@@ -448,10 +448,10 @@ impl StateGlyph {
         }
     }
 
-    /// Куда клонится масса фигуры: сектор с заметно наибольшей нагрузкой.
+    /// Доминирующий сектор фигуры: ресурс с заметно наибольшей нагрузкой.
     ///
     /// «Заметно» — не меньше 15 % и на 10 пунктов больше следующего: иначе
-    /// стрелка дёргалась бы между почти равными секторами каждый такт.
+    /// подпись дёргалась бы между почти равными секторами каждый такт.
     #[must_use]
     pub fn lean(&self) -> Option<(Sector, f64)> {
         let mut loads = [
@@ -488,16 +488,7 @@ impl StateGlyph {
             if !self.has_data() {
                 return "измерений пока нет".to_string();
             }
-            let what = match self.overall() {
-                StateClass::Failed => "функция потеряна",
-                StateClass::Critical => "критическое состояние",
-                StateClass::Warning => "требуется внимание",
-                StateClass::Degraded => "частичная деградация",
-                StateClass::Saturated => "повышенная активность",
-                _ => "все системы в норме",
-            };
             let ascii = matches!(capability, Capability::Ascii);
-            let dot = if ascii { " - " } else { " · " };
             return match self.lean() {
                 Some((sector, load)) => {
                     let arrow = match (sector, ascii) {
@@ -512,30 +503,21 @@ impl StateGlyph {
                         (Sector::Core, _) => "",
                     };
                     let sector = match sector {
-                        Sector::Cpu => "cpu",
-                        Sector::Memory => "память",
-                        Sector::Io => "io",
-                        Sector::Net => "сеть",
-                        Sector::Core => "ядро",
+                        Sector::Cpu => "CPU",
+                        Sector::Memory => "MEM",
+                        Sector::Io => "IO",
+                        Sector::Net => "NET",
+                        Sector::Core => "CORE",
                     };
-                    format!("{what}{dot}уклон {arrow} {sector} {:.0}%", load * 100.0)
+                    format!("доминирует {arrow} {sector} {:.0}%", load * 100.0)
                 }
-                None => format!("{what}{dot}по центру"),
+                None => "ресурсы сбалансированы".to_string(),
             };
         }
         if !self.has_data() {
             return "no measurements yet".to_string();
         }
-        let what = match self.overall() {
-            StateClass::Failed => "a function is lost",
-            StateClass::Critical => "critical state",
-            StateClass::Warning => "attention needed",
-            StateClass::Degraded => "partial impairment",
-            StateClass::Saturated => "elevated activity",
-            _ => "all systems nominal",
-        };
         let ascii = matches!(capability, Capability::Ascii);
-        let dot = if ascii { " - " } else { " · " };
         match self.lean() {
             Some((sector, load)) => {
                 let arrow = match (sector, ascii) {
@@ -549,13 +531,16 @@ impl StateGlyph {
                     (Sector::Net, true) => "<",
                     (Sector::Core, _) => "",
                 };
-                format!(
-                    "{what}{dot}leans {arrow} {} {:.0}%",
-                    sector.label(),
-                    load * 100.0
-                )
+                let sector = match sector {
+                    Sector::Cpu => "CPU",
+                    Sector::Memory => "MEM",
+                    Sector::Io => "IO",
+                    Sector::Net => "NET",
+                    Sector::Core => "CORE",
+                };
+                format!("dominant {arrow} {sector} {:.0}%", load * 100.0)
             }
-            None => format!("{what}{dot}centered"),
+            None => "resources balanced".to_string(),
         }
     }
 
@@ -708,10 +693,10 @@ mod tests {
         );
     }
 
-    /// Центр масс назван словами и стрелкой той стороны фигуры, где живёт
-    /// сектор; при почти равной нагрузке — «centered», а не дёрганье.
+    /// Доминирующий ресурс назван общепринятым термином и аббревиатурой;
+    /// при почти равной нагрузке — `centered`, а не дёрганье.
     #[test]
-    fn detail_names_where_the_mass_leans() {
+    fn detail_names_the_dominant_resource() {
         let leaning = StateGlyph::from_snapshot(&snapshot(
             &[(ids::HOST_CPU_UTIL, 0.05), (ids::HOST_MEM_UTIL, 0.62)],
             Vec::new(),
@@ -723,18 +708,19 @@ mod tests {
         assert!(
             leaning
                 .verdict_detail(Capability::TrueColor)
-                .ends_with("leans → mem 62%"),
+                .ends_with("dominant → MEM 62%"),
             "{}",
             leaning.verdict_detail(Capability::TrueColor)
         );
+        assert!(leaning
+            .verdict_detail_for(Capability::TrueColor, pulse_core::config::Language::Russian,)
+            .ends_with("доминирует → MEM 62%"));
         let even = StateGlyph::from_snapshot(&snapshot(
             &[(ids::HOST_CPU_UTIL, 0.40), (ids::HOST_MEM_UTIL, 0.45)],
             Vec::new(),
         ));
         assert_eq!(even.lean(), None);
-        assert!(even
-            .verdict_detail(Capability::Ascii)
-            .ends_with(" - centered"));
+        assert_eq!(even.verdict_detail(Capability::Ascii), "resources balanced");
     }
 
     #[test]

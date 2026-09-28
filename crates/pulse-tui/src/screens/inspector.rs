@@ -934,7 +934,7 @@ fn dossier_block(
                 Span::styled(found.lane, theme.text()),
                 Span::styled(
                     format!(
-                        " peak {} avg {}",
+                        " max {} avg {}",
                         crate::format::cores(found.peak),
                         crate::format::cores(found.mean)
                     ),

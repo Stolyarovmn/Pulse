@@ -578,19 +578,11 @@ fn render_selected(
     }) {
         lines.push(pair(
             "CPU 60s",
-            if theme.language == pulse_core::config::Language::Russian {
-                format!(
-                    "пик {}  среднее {}",
-                    crate::format::cores(found.peak),
-                    crate::format::cores(found.mean)
-                )
-            } else {
-                format!(
-                    "peak {}  avg {}",
-                    crate::format::cores(found.peak),
-                    crate::format::cores(found.mean)
-                )
-            },
+            format!(
+                "max {}  avg {}",
+                crate::format::cores(found.peak),
+                crate::format::cores(found.mean)
+            ),
         ));
     }
     lines.push(pair(
@@ -624,7 +616,7 @@ fn render_selected(
                 ),
                 Span::styled(
                     format!(
-                        "{:<10}",
+                        "{:<12}",
                         crate::i18n::translate(theme.language, target.label)
                     ),
                     theme.dim(),
@@ -632,7 +624,7 @@ fn render_selected(
                 Span::styled(
                     crate::ui::truncate(
                         &target.name,
-                        usize::from(width).saturating_sub(14),
+                        usize::from(width).saturating_sub(16),
                         theme.capability,
                     ),
                     if selected {
@@ -722,12 +714,12 @@ fn changes_lines(snapshot: &Snapshot, theme: &Theme) -> Vec<Line<'static>> {
         lines.push(Line::from(Span::styled(
             if theme.language == pulse_core::config::Language::Russian {
                 format!(
-                    "{} рутинных наблюдений скрыто · : raw events",
+                    "{} рутинных наблюдений скрыто · : Все события",
                     snapshot.suppressed_noise
                 )
             } else {
                 format!(
-                    "{} routine observations suppressed · : raw events",
+                    "{} routine observations suppressed · : Raw events",
                     snapshot.suppressed_noise
                 )
             },

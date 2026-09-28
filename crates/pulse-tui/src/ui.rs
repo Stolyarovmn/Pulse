@@ -217,37 +217,10 @@ pub fn footer_line(
     let ru = language == Language::Russian;
     let mut parts: Vec<(String, Option<Icon>)> = match preset {
         FooterPreset::Wide => vec![
-            (
-                if ru { "[1]Обзор" } else { "[1]Overview" }.into(),
-                Some(Icon::Overview),
-            ),
-            (
-                if ru {
-                    "[2]Проблемы"
-                } else {
-                    "[2]Problems"
-                }
-                .into(),
-                Some(Icon::ProblemsScreen),
-            ),
-            (
-                if ru {
-                    "[3]Объекты"
-                } else {
-                    "[3]Entities"
-                }
-                .into(),
-                Some(Icon::Entities),
-            ),
-            (
-                if ru {
-                    "[4]История"
-                } else {
-                    "[4]Timeline"
-                }
-                .into(),
-                Some(Icon::Timeline),
-            ),
+            ("[1]Overview".into(), Some(Icon::Overview)),
+            ("[2]Problems".into(), Some(Icon::ProblemsScreen)),
+            ("[3]Entities".into(), Some(Icon::Entities)),
+            ("[4]Timeline".into(), Some(Icon::Timeline)),
             (
                 if ru { "[/]Поиск" } else { "[/]Search" }.into(),
                 Some(Icon::Search),
@@ -276,37 +249,10 @@ pub fn footer_line(
             ),
         ],
         FooterPreset::Medium => vec![
-            (
-                if ru { "[1]Обзор" } else { "[1]Overview" }.into(),
-                Some(Icon::Overview),
-            ),
-            (
-                if ru {
-                    "[2]Проблемы"
-                } else {
-                    "[2]Problems"
-                }
-                .into(),
-                Some(Icon::ProblemsScreen),
-            ),
-            (
-                if ru {
-                    "[3]Объекты"
-                } else {
-                    "[3]Entities"
-                }
-                .into(),
-                Some(Icon::Entities),
-            ),
-            (
-                if ru {
-                    "[4]История"
-                } else {
-                    "[4]Timeline"
-                }
-                .into(),
-                Some(Icon::Timeline),
-            ),
+            ("[1]Overview".into(), Some(Icon::Overview)),
+            ("[2]Problems".into(), Some(Icon::ProblemsScreen)),
+            ("[3]Entities".into(), Some(Icon::Entities)),
+            ("[4]Timeline".into(), Some(Icon::Timeline)),
             (
                 if ru { "[/]Поиск" } else { "[/]Search" }.into(),
                 Some(Icon::Search),

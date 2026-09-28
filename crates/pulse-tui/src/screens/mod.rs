@@ -359,7 +359,7 @@ fn render_header(
         spans.push(Span::styled(
             format!(
                 "{} {}",
-                crate::i18n::choose(theme.language, "up", "аптайм"),
+                "up",
                 format_duration(std::time::Duration::from_secs(uptime as u64))
             ),
             theme.dim(),
@@ -668,10 +668,7 @@ pub(crate) fn vitals_line<'a>(snapshot: &Snapshot, theme: &'a Theme) -> Line<'a>
         ),
         Span::styled(format::percent(psi_mem), theme.ratio(psi_mem * 8.0)),
         Span::raw("    "),
-        Span::styled(
-            crate::i18n::choose(theme.language, "IO WAIT ", "ОЖИДАНИЕ IO "),
-            theme.dim(),
-        ),
+        Span::styled("IO WAIT ", theme.dim()),
         Span::styled(format::percent(io_wait), theme.ratio(io_wait * 4.0)),
         Span::raw("    "),
         Span::styled("NET ", theme.dim()),

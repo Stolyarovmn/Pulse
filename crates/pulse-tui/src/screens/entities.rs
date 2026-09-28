@@ -320,7 +320,7 @@ fn summary_rows(snapshot: &Snapshot, entity: &Entity) -> Vec<(&'static str, Stri
             // §Resource semantics: у агрегата обязана быть явно названа область,
             // иначе `CPU 18.0c` у system.slice читается как нагрузка одного
             // объекта, а не суммы его потомков.
-            rows.push(("scope", "descendants".to_string()));
+            rows.push(("scope", "cgroup subtree".to_string()));
             let limit = snapshot.value(entity.id, ids::CG_CPU_LIMIT_CORES);
             rows.push(("CPU limit", crate::rows::cpu_limit_text(limit)));
             if let Some(psi) = snapshot.value(entity.id, ids::CG_PSI_IO_FULL_AVG10) {

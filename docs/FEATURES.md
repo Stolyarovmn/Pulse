@@ -86,7 +86,7 @@ cgroup 90..=149, process 150..=189, agent 190..=219).
 | Inspector как дело: TRAIL, CASE, LEADS (зацепки-факты), INSIDE (каждый объект с долей CPU), AROUND, DOSSIER, RECENT; 3/2/1 колонки по ширине; `Enter` открывает показанную строку | `src/screens/inspector.rs`, `src/leads.rs` | реализовано |
 | Расследование как направленный спуск: уровни сущностей, `Enter` вниз по уровню/дереву, ресурсы — листья, прыжок в сторону — отдельный список | `src/investigate.rs` | реализовано |
 | Единый словарь отметок событий (◇◆▲ ✓ ▼ ↻ + − ~ !) для Overview, Story и дорожки EVENTS | `src/marks.rs`, `src/screens/timeline.rs` | реализовано |
-| Explainable relevance: `WHY` у каждой строки `RELEVANT ENTITIES`; без причин блок называется `KEY ENTITIES` | `src/screens/overview.rs`, `src/fold.rs` | реализовано |
+| Explainable relevance: `WHY` у каждой строки `TOP CONSUMERS`; без причин блок называется `KEY OBJECTS` | `src/screens/overview.rs`, `src/fold.rs` | реализовано |
 | Логическая свёртка (`unit+14p`), `m` — technical view | `src/screens/entities.rs`, `src/fold.rs` | реализовано |
 | Анти-stretch layout: `max_useful_width`, остаток ширины — намеренная пустота | `src/layout.rs` | реализовано |
 | Честная история: спарклайн только при ≥2 точках, иначе `collecting history`; вердикт ≤ окна наблюдения | `src/screens/timeline.rs`, тесты | реализовано |
@@ -100,7 +100,7 @@ cgroup 90..=149, process 150..=189, agent 190..=219).
 | Пайп древом в стиле панелей omp: скруглённые рамки `╭╮╰╯`, подпись в верхней границе, тяжёлая рамка фокуса `┏━┓`, ствол слева и ветвь по верхней границе ряда | `pulse-tui/src/pipe.rs` (`Charset`, `render_boxes`) | реализовано |
 | Навигация пайпа по осям экрана: `↑↓←→` двигают курсор по сетке, `⎵` раскрывает и сворачивает; число колонок сообщает кадр | `pulse-tui/src/pipe.rs` (`move_by`, `columns_for`), `pulse-tui/src/app.rs` | реализовано |
 | Контекстный футер: базовые экраны показывают прямые переходы, Inspector — `Enter Follow` / `Tab Panel` / `Esc Back`, overlay — только свои действия; текущий режим остаётся акцентной плашкой | `pulse-tui/src/screens/mod.rs` (`footer_hints`, `active_marker`) | реализовано |
-| Settings `,`: язык `ui.language = en \| ru` и набор иконок меняются сразу; preview различает три Nerd-глифа; постоянное значение остаётся в config; ASCII принудительно использует английские ASCII-подписи без иконок | `pulse-tui/src/screens/settings.rs`, `pulse-tui/src/i18n.rs`, `pulse-tui/src/app.rs` | реализовано |
+| Settings `,`: язык `ui.language = en \| ru` и набор иконок меняются сразу; preview различает три Nerd-глифа; локаль сохраняет канонические `LIVE/up/OVERVIEW/PROBLEMS/ENTITIES/TIMELINE/CPU/MEM/PSI/IO WAIT/max/avg`; ASCII использует английские ASCII-подписи без иконок | `pulse-tui/src/screens/settings.rs`, `pulse-tui/src/i18n.rs`, `pulse-tui/src/app.rs` | реализовано |
 | Демонстрационный сценарий `--demo`: подменяется только `FsSource`, конвейер и правила настоящие; старт у порога деградации, чтобы первый кадр уже двигался; цикл покой → деградация → восстановление; пометка `DEMO` в шапке | `pulse-collect/src/demo.rs` (`DemoFs`), `pulse-cli/src/main.rs` (`source_fs`), `pulse-cli/tests/demo_scenario.rs` | реализовано |
 | Ось времени с отметками: события ставятся в свой момент, символ берётся из серьёзности события (критика отличается от предупреждения), худшее состояние выигрывает колонку, таймкоды подписываются без наложения | `pulse-tui/src/screens/timeline.rs` (`rail_marks`, `rail_labels`) | реализовано |
 | Дорожки метрик покрывают запрошенное окно бакетами, а не хвост ряда; в бакете берётся максимум, бакет без данных рисуется точкой, а не нулём | `pulse-tui/src/format.rs` (`ratio_lane`) | реализовано |
@@ -153,7 +153,7 @@ cgroup 90..=149, process 150..=189, agent 190..=219).
 | Журнал событий участвует в жёстком пределе памяти: при достижении `max_bytes` старые записи вытесняются | `pulse-store/src/lib.rs:1148-1152` | реализовано |
 | События жизненного цикла сущностей и операционные изменения, отделённые от потоков ядра | `pulse-core/src/semantic.rs` | реализовано |
 | Проблемы как события с evidence (метрика, порог, значение, сущность) и моментами enter/clear | `pulse-core/src/problem.rs`, `pulse-engine/src/analyzer.rs` | реализовано |
-| Timeline: `: raw events` — поток событий, `: story` — значимая история; `Enter` в панели Story открывает Inspector сущности события | `pulse-tui/src/screens/timeline.rs`, `pulse-tui/src/app.rs:985-989` | реализовано |
+| Timeline: `Raw events` (`Все события` в ru) — полный поток; `Incident story` — значимая история; `Enter` в Story открывает Inspector сущности события | `pulse-tui/src/screens/timeline.rs`, `pulse-tui/src/app.rs` | реализовано |
 | Открытые файлы процесса (в том числе пути `/var/log/...`) как деталь; отдельная ветка `log` показывает только фактически открытые log-файлы | `pulse-collect/src/details.rs`, `pulse-tui/src/pipe.rs` | реализовано |
 | Ограниченное чтение journald по раскрытию: opt-in `security.read_journal`, trusted `_SYSTEMD_CGROUP`, 12 строк / 16 КиБ, санитизация, без истории/экспорта | `pulse-collect/src/details.rs`, `pulse-core/src/details.rs` | реализовано для Inspector/pipe |
 | Окно journal начинается не раньше запуска идентичности `(pid,start_ticks)` и не раньше активной проблемы выбранного объекта | `pulse-tui/src/app.rs`, `pulse-collect/src/details.rs` | реализовано |

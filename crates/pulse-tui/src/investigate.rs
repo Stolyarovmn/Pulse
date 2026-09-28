@@ -413,7 +413,7 @@ fn is_doing_io(snapshot: &Snapshot, id: EntityId) -> bool {
 /// angie.service» на шаге вниз из `angie.service` — оператор видел бы круг
 /// там, где происходит спуск. Вид цели однозначен: вниз, в cgroup.
 fn push_step(steps: &mut Vec<Step>, key: EntityKey, name: &str, kind: EntityKind) {
-    push_labelled(steps, kind.as_str(), key, name, kind);
+    push_labelled(steps, "descendants", key, name, kind);
 }
 
 /// Добавляет шаг с явной подписью: для боковых переходов направление важно.
@@ -432,9 +432,7 @@ fn push_labelled(
         .find(|step| step.label == label && step.kind == kind)
     {
         group.count = group.count.saturating_add(1);
-        // Счётная форма вместо суффикса `s`: `process` давал «40 processs»,
-        // а вид сущности приходит из реестра и не обязан быть склоняемым.
-        group.name = format!("{} × {}", group.count, kind.as_str());
+        group.name = format!("{} {}", group.count, plural_kind(kind));
         return;
     }
     steps.push(Step {
@@ -444,6 +442,19 @@ fn push_labelled(
         kind,
         count: 1,
     });
+}
+
+const fn plural_kind(kind: EntityKind) -> &'static str {
+    match kind {
+        EntityKind::Host => "hosts",
+        EntityKind::Unit => "units",
+        EntityKind::Cgroup => "cgroups",
+        EntityKind::Process => "processes",
+        EntityKind::Container => "containers",
+        EntityKind::Pod => "pods",
+        EntityKind::Disk => "disks",
+        EntityKind::NetIf => "interfaces",
+    }
 }
 
 /// Подпись ресурса: чем он служит объекту.
@@ -791,7 +802,7 @@ mod tests {
     }
 
     #[test]
-    fn folded_step_uses_counting_form_not_broken_plural() {
+    fn folded_step_uses_readable_plural() {
         // Живой кадр показывал «40 processs»: суффикс `s` приклеивался к виду
         // сущности из реестра метрик. Вид не обязан быть склоняемым словом.
         let mut graph = EntityGraph::new("boot", "host", Timestamp::from_millis(1_000));
@@ -829,13 +840,13 @@ mod tests {
             "ломаный плюрал: {names:?}"
         );
         assert!(
-            names.contains(&"3 × process"),
+            names.contains(&"3 processes"),
             "свёрнутые объекты названы счётной формой: {names:?}"
         );
     }
 
     #[test]
-    fn unit_child_of_its_cgroup_is_a_descent_labelled_by_kind() {
+    fn unit_child_of_its_cgroup_is_a_descent_labelled_as_descendants() {
         // Так устроен реальный граф: коллектор делает `unit` ребёнком своей
         // cgroup (`EntitySpec::parent(cgroup)`), хотя семантически unit
         // владеет ею. Живой кадр показывал из `unit angie.service` шаг
@@ -871,8 +882,8 @@ mod tests {
         let down = drill_steps(&snapshot, unit);
         let labels: Vec<&str> = down.iter().map(|step| step.label).collect();
         assert!(
-            labels.contains(&"cgroup"),
-            "шаг вниз подписан видом цели: {labels:?}"
+            labels.contains(&"descendants"),
+            "шаг вниз подписан зрелым термином иерархии: {labels:?}"
         );
         assert!(
             !labels.contains(&"owner"),

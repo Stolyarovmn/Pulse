@@ -578,16 +578,25 @@ impl App {
 
     #[must_use]
     pub fn title_for(&self, language: pulse_core::config::Language) -> String {
-        let english = match &self.overlay {
-            Some(Overlay::Palette(PaletteState { help: true, .. })) => "HELP",
-            Some(Overlay::Search(_)) => "SEARCH",
-            Some(Overlay::Palette(_)) => "COMMANDS",
-            Some(Overlay::Pipe(_)) => "PIPE",
-            Some(Overlay::Settings(_)) => "SETTINGS",
-            None if self.inspector.is_some() => "INSPECTOR",
-            None => self.screen.title(),
-        };
-        crate::i18n::translate(language, english).into_owned()
+        match &self.overlay {
+            Some(Overlay::Palette(PaletteState { help: true, .. })) => {
+                crate::i18n::translate(language, "HELP").into_owned()
+            }
+            Some(Overlay::Search(_)) => crate::i18n::translate(language, "SEARCH").into_owned(),
+            Some(Overlay::Palette(_)) => crate::i18n::translate(language, "COMMANDS").into_owned(),
+            Some(Overlay::Pipe(_)) => crate::i18n::translate(language, "PIPE").into_owned(),
+            Some(Overlay::Settings(_)) => crate::i18n::translate(language, "SETTINGS").into_owned(),
+            None if self.inspector.is_some() => {
+                crate::i18n::translate(language, "INSPECTOR").into_owned()
+            }
+            None => match self.screen {
+                Screen::Overview => "OVERVIEW",
+                Screen::Problems => "PROBLEMS",
+                Screen::Entities => "ENTITIES",
+                Screen::Timeline => "TIMELINE",
+            }
+            .to_string(),
+        }
     }
 
     /// Сообщает, сколько колонок сетки нарисовал последний кадр пайпа.
@@ -829,7 +838,7 @@ impl App {
         self.status = crate::i18n::choose(
             self.language,
             "raw events (secondary view)",
-            "сырые события (вторичный вид)",
+            "все события (вторичный вид)",
         )
         .to_string();
     }
