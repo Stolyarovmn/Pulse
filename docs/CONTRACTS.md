@@ -65,9 +65,13 @@ wsl -d Ubuntu-24.04 -- bash /mnt/c/Users/maxim/project/pulse/scripts/wsl-test.sh
 ```rust
 pub trait FsSource: Send + Sync + std::fmt::Debug {
     fn read(&self, path: &std::path::Path, cap: usize) -> std::io::Result<Vec<u8>>;
-    fn read_dir(&self, path: &std::path::Path) -> std::io::Result<Vec<std::ffi::OsString>>;
+    fn read_single(&self, path: &std::path::Path, cap: usize) -> std::io::Result<Vec<u8>>;
+    fn scan_dir(&self, path: &std::path::Path,
+                visit: &mut dyn FnMut(&std::ffi::OsStr) -> bool) -> std::io::Result<()>;
     fn read_link(&self, path: &std::path::Path) -> std::io::Result<std::path::PathBuf>;
     fn inode(&self, path: &std::path::Path) -> std::io::Result<u64>;
+    fn open_fd_count(&self, fd_dir: &std::path::Path) -> std::io::Result<usize>;
+    fn statfs(&self, path: &std::path::Path) -> std::io::Result<FsUsage>;
 }
 pub struct RealFs;
 pub struct FixtureFs { /* in-memory дерево для тестов */ }
@@ -500,25 +504,47 @@ Renderer сохраняет ключи показанных строк акти�
 ## Детали процесса (pulse-core/details.rs, pulse-collect/details.rs)
 
 Терминальный уровень цепочки: `user`, `exe`, `cwd`, слушающие порты, открытые
-файлы. Домен и контракт `ProcessDetailsSource` живут в `pulse-core`, чтение
-`/proc` - в `pulse-collect`, интерфейс зависит от контракта, а не от файловой
-системы.
+файлы и opt-in journald. Домен и контракт `ProcessDetailsSource` живут в
+`pulse-core`, чтение `/proc`/journald — в `pulse-collect`, интерфейс зависит
+от контракта, а не от файловой системы.
 
 Инварианты:
 
 - Чтение **по требованию**, только для открытого процесса. Обход
   `/proc/<pid>/fd` для двух тысяч процессов - десятки тысяч syscall на такт,
   то есть агент сам становится проблемой.
-- `DetailsCache` сбрасывается при смене такта: одно чтение на процесс на такт,
-  иначе нажатие клавиши стоило бы новый обход `/proc`.
-- Санитизация в источнике: имя файла и путь задаёт сам процесс и может
+- `DetailsCache` сбрасывается при смене такта. Ключ —
+  `(ProcessIdentity, DetailsQuery)`, где query включает `journal` и окно
+  проблемы: одно чтение на процесс **на запрос и временное окно** за такт.
+  Иначе другая проблема получила бы старую выборку журнала, а каждое нажатие
+  клавиши — новый обход `/proc`.
+- Санитизация выполняется в источнике: имя файла, путь и journal message могут
   содержать управляющие последовательности терминала.
+- Journald включается только через `security.read_journal`, фильтруется по
+  trusted `_SYSTEMD_CGROUP`, ограничен 12 строками / 16 КиБ и не читается для
+  свёрнутой ветки.
 - `restricted` отличает отказ ядра в правах от отсутствия файлов. Пустой блок
   без пометки читался бы как «процесс не держит ни файлов, ни портов».
 - Таблицы сокетов читаются с явным лимитом 4 МиБ: 64 КиБ кончаются на четырёх
   сотнях соединений, и слушающий сокет ушёл бы за обрезку.
 - Детали не попадают ни в экспорт, ни в историю: они существуют только на
   экране Inspector.
+
+## Настройки и локализация TUI
+
+- `Config.ui.language = en | ru` и `Config.ui.icons = off | unicode | nerd`
+  задают стартовые значения. Старое `icons = true` остаётся синонимом
+  `unicode`.
+- Overlay Settings (`,`) меняет authoritative `App.language` и `App.icons`
+  сразу; остальные экраны читают те же поля. Изменения живут до завершения
+  процесса; постоянный выбор записывается владельцем в config — TUI не
+  угадывает, какой файл конфигурации разрешено переписать.
+- ASCII capability принудительно отображает английские ASCII-подписи и
+  скрывает иконки независимо от выбранного языка/набора: ноль не-ASCII
+  символов важнее настройки, которую терминал не способен показать.
+- Nerd Font — выбор PUA-глифов, не системная установка шрифта. Settings
+  показывает три разных preview-глифа; шрифт `Nerd Font Mono` выбирается
+  в эмуляторе терминала.
 
 ## Ограниченное завершение TUI (pulse-tui/lib.rs)
 

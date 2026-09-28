@@ -90,12 +90,18 @@ pub fn rate(value: f64) -> String {
 /// используются буквенные метки `RX`/`TX`.
 #[must_use]
 pub fn rx_tx(rx: Option<f64>, tx: Option<f64>, ascii: bool) -> String {
-    // `None` — измерения нет (первый такт, серия не публикуется). Печатать
-    // `0 B/s` в этом случае значит утверждать отсутствие трафика.
     if ascii {
-        format!("RX {} TX {}", optional_rate(rx), optional_rate(tx))
+        format!(
+            "RX {} TX {}",
+            optional_rate_for(rx, true),
+            optional_rate_for(tx, true)
+        )
     } else {
-        format!("↓{} ↑{}", optional_rate(rx), optional_rate(tx))
+        format!(
+            "↓{} ↑{}",
+            optional_rate_for(rx, false),
+            optional_rate_for(tx, false)
+        )
     }
 }
 
@@ -103,10 +109,22 @@ pub fn rx_tx(rx: Option<f64>, tx: Option<f64>, ascii: bool) -> String {
 #[must_use]
 pub fn disk_rw(read: Option<f64>, write: Option<f64>, ascii: bool) -> String {
     if ascii {
-        format!("R {} W {}", optional_rate(read), optional_rate(write))
+        format!(
+            "R {} W {}",
+            optional_rate_for(read, true),
+            optional_rate_for(write, true)
+        )
     } else {
-        format!("↓{} ↑{}", optional_rate(read), optional_rate(write))
+        format!(
+            "↓{} ↑{}",
+            optional_rate_for(read, false),
+            optional_rate_for(write, false)
+        )
     }
+}
+
+fn optional_rate_for(value: Option<f64>, ascii: bool) -> String {
+    value.map_or_else(|| if ascii { "-" } else { "—" }.to_string(), rate)
 }
 
 /// Скорость или честный прочерк, если измерения нет.

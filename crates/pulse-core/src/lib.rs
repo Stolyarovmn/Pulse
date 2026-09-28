@@ -51,7 +51,7 @@ pub mod semantic;
 pub mod snapshot;
 pub mod time;
 
-pub use config::{Config, ConfigError};
+pub use config::{Config, ConfigError, Language};
 pub use details::{
     DetailsCache, DetailsQuery, OpenFile, Port, ProcessDetails, ProcessDetailsSource,
     ProcessIdentity,

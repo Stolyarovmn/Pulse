@@ -25,6 +25,7 @@ pub mod app;
 pub mod fold;
 pub mod format;
 pub mod glyph;
+pub mod i18n;
 pub mod icons;
 pub mod investigate;
 pub mod layout;
@@ -157,11 +158,12 @@ pub fn run(
 
     let backend = CrosstermBackend::new(stdout);
     let mut terminal: Terminal<CrosstermBackend<Stdout>> = Terminal::new(backend)?;
-
     let theme = Theme::new(config.ui.ascii);
+
     let mut app = App::new(config.security.allow_actions)
         .with_details(details)
         .with_icons(config.ui.icons)
+        .with_language(config.ui.language)
         .with_demo(demo)
         .with_self_metrics(config.ui.show_self_metrics);
     let refresh = Duration::from_millis(config.ui.refresh_ms.clamp(50, 5_000));

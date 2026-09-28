@@ -245,7 +245,7 @@ fn render_state(
         theme.nominal()
     };
     lines.push(Line::from(Span::styled(
-        glyph.verdict().to_string(),
+        glyph.verdict_for(theme.language).to_string(),
         verdict_style,
     )));
     // Пояснение вместо счётчика проблем: число уже есть в шапке (`▲1`) и в
@@ -254,7 +254,7 @@ fn render_state(
     if plan.shows(Priority::P2) {
         lines.push(Line::from(Span::styled(
             ui::truncate(
-                &glyph.verdict_detail(theme.capability),
+                &glyph.verdict_detail_for(theme.capability, theme.language),
                 usize::from(area.width),
                 theme.capability,
             ),
@@ -296,10 +296,14 @@ fn retention_line(snapshot: &Snapshot, theme: &Theme) -> Option<Line<'static>> {
     // Число — фактически удерживаемая память, а не настроенный бюджет:
     // подписывать его «budget» значило бы назвать одну величину другой.
     let held = crate::format::bytes(agent.store_bytes as f64);
-    let text = if agent.history_eviction_no_progress > 0 {
-        format!("history at memory ceiling: retention minimal, {held} held")
-    } else {
-        format!("history retention reduced by memory ceiling: {held} held")
+    let text = match (
+        theme.language == pulse_core::config::Language::Russian,
+        agent.history_eviction_no_progress > 0,
+    ) {
+        (true, true) => format!("история у потолка памяти: хранение минимально, занято {held}"),
+        (true, false) => format!("глубина истории снижена потолком памяти: занято {held}"),
+        (false, true) => format!("history at memory ceiling: retention minimal, {held} held"),
+        (false, false) => format!("history retention reduced by memory ceiling: {held} held"),
     };
     Some(Line::from(Span::styled(text, theme.dim())))
 }
@@ -318,17 +322,28 @@ fn attention_lines(snapshot: &Snapshot, theme: &Theme) -> Vec<Line<'static>> {
             .map_or(snapshot.at, |host| host.first_seen);
         let mut lines = vec![
             Line::from(Span::styled(
-                format!("{mark} NO ACTIVE PROBLEMS"),
+                format!(
+                    "{mark} {}",
+                    crate::i18n::translate(theme.language, "NO ACTIVE PROBLEMS")
+                ),
                 theme.strong(),
             )),
             Line::from(""),
             // Раздел 151: утверждение о наблюдении, а не о прошлом системы.
             Line::from(Span::styled(
-                format!("observed nominal for {}", format_duration(observed)),
+                if theme.language == pulse_core::config::Language::Russian {
+                    format!("норма наблюдается {}", format_duration(observed))
+                } else {
+                    format!("observed nominal for {}", format_duration(observed))
+                },
                 theme.text(),
             )),
             Line::from(Span::styled(
-                format!("observation started {started}"),
+                if theme.language == pulse_core::config::Language::Russian {
+                    format!("наблюдение началось {started}")
+                } else {
+                    format!("observation started {started}")
+                },
                 theme.dim(),
             )),
         ];
@@ -416,7 +431,11 @@ fn render_entities(
     );
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "  sort:relevance  filter:all  view:logical",
+            crate::i18n::choose(
+                theme.language,
+                "  sort:relevance  filter:all  view:logical",
+                "  сорт:значимость  фильтр:все  вид:логический",
+            ),
             theme.dim(),
         ))),
         rect(&chunks, 1),
@@ -434,10 +453,13 @@ fn render_entities(
     // Entities.
     const NAME: usize = 34;
     let mut lines: Vec<Line<'_>> = Vec::new();
+    let name_title = crate::i18n::translate(theme.language, "NAME");
+    let mem_title = crate::i18n::translate(theme.language, "MEM");
+    let why_title = crate::i18n::translate(theme.language, "WHY");
     let header = if show_why {
-        "  NAME                                CPU      MEM      S  WHY"
+        format!("  {name_title:<NAME$} CPU      {mem_title:<8} S  {why_title}")
     } else {
-        "  NAME                                CPU      MEM      S"
+        format!("  {name_title:<NAME$} CPU      {mem_title:<8} S")
     };
     lines.push(Line::from(Span::styled(header, theme.dim())));
     let visible = usize::from(table.height).saturating_sub(1);
@@ -446,10 +468,10 @@ fn render_entities(
         let selected_row = index == view.selected;
         let marker = crate::ui::row_marker(selected_row);
         let name = crate::ui::truncate(&logical.row.name, NAME, theme.capability);
-        let why = logical
-            .reasons
-            .first()
-            .map_or("key", |reason| reason.label());
+        let why = logical.reasons.first().map_or_else(
+            || crate::i18n::choose(theme.language, "key", "ключ").to_string(),
+            |reason| crate::i18n::translate(theme.language, reason.label()).into_owned(),
+        );
         let text = if show_why {
             format!(
                 "{marker}{name:<NAME$} {:>6} {:>8}  {}  {why}",
@@ -513,9 +535,11 @@ fn render_selected(
     let entity = snapshot.entity(logical.row.id);
     lines.push(Line::from(""));
     let pair = |label: &'static str, value: String| {
+        let label = crate::i18n::translate(theme.language, label);
+        let value = crate::i18n::translate(theme.language, &value);
         Line::from(vec![
             Span::styled(format!("{label:<12}"), theme.dim()),
-            Span::styled(value, theme.text()),
+            Span::styled(value.into_owned(), theme.text()),
         ])
     };
 
@@ -529,10 +553,10 @@ fn render_selected(
     ));
     lines.push(pair(
         "RELEVANCE",
-        logical
-            .reasons
-            .first()
-            .map_or_else(|| "key entity".to_string(), |r| r.label().to_string()),
+        logical.reasons.first().map_or_else(
+            || crate::i18n::choose(theme.language, "key entity", "ключевой объект").to_string(),
+            |r| crate::i18n::translate(theme.language, r.label()).into_owned(),
+        ),
     ));
     if let Some(id) = &logical.technical_id {
         // Имя заменено на узнаваемое, но идентификатор нужен для `docker inspect`
@@ -554,11 +578,19 @@ fn render_selected(
     }) {
         lines.push(pair(
             "CPU 60s",
-            format!(
-                "peak {}  avg {}",
-                crate::format::cores(found.peak),
-                crate::format::cores(found.mean)
-            ),
+            if theme.language == pulse_core::config::Language::Russian {
+                format!(
+                    "пик {}  среднее {}",
+                    crate::format::cores(found.peak),
+                    crate::format::cores(found.mean)
+                )
+            } else {
+                format!(
+                    "peak {}  avg {}",
+                    crate::format::cores(found.peak),
+                    crate::format::cores(found.mean)
+                )
+            },
         ));
     }
     lines.push(pair(
@@ -570,7 +602,10 @@ fn render_selected(
     }
 
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("RELATIONS", theme.dim())));
+    lines.push(Line::from(Span::styled(
+        crate::i18n::translate(theme.language, "RELATIONS").into_owned(),
+        theme.dim(),
+    )));
     if logical.processes > 0 {
         lines.push(pair("processes", format!("{}", logical.processes)));
     }
@@ -587,7 +622,13 @@ fn render_selected(
                         theme.dim()
                     },
                 ),
-                Span::styled(format!("{:<10}", target.label), theme.dim()),
+                Span::styled(
+                    format!(
+                        "{:<10}",
+                        crate::i18n::translate(theme.language, target.label)
+                    ),
+                    theme.dim(),
+                ),
                 Span::styled(
                     crate::ui::truncate(
                         &target.name,
@@ -606,7 +647,10 @@ fn render_selected(
 
     if plan.shows(Priority::P3) {
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("RECENT", theme.dim())));
+        lines.push(Line::from(Span::styled(
+            crate::i18n::translate(theme.language, "RECENT").into_owned(),
+            theme.dim(),
+        )));
         let touched = snapshot
             .meaningful
             .iter()
@@ -615,7 +659,11 @@ fn render_selected(
             .collect::<Vec<_>>();
         if touched.is_empty() {
             lines.push(Line::from(Span::styled(
-                "no meaningful changes",
+                crate::i18n::choose(
+                    theme.language,
+                    "no meaningful changes",
+                    "значимых изменений нет",
+                ),
                 theme.dim(),
             )));
         } else {
@@ -630,9 +678,6 @@ fn render_selected(
 
     frame.render_widget(Paragraph::new(lines), area);
 }
-
-/// Строки блока изменений (разделы 124, 153).
-///
 /// Baseline занимает ровно одну selectable строку; детали живут в Selected pane.
 fn changes_lines(snapshot: &Snapshot, theme: &Theme) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -650,25 +695,42 @@ fn changes_lines(snapshot: &Snapshot, theme: &Theme) -> Vec<Line<'static>> {
                 crate::marks::event_style(event.kind, event.severity, theme),
             ),
             Span::raw(" "),
-            Span::styled(headline(event), theme.text()),
+            Span::styled(
+                crate::i18n::translate(theme.language, &headline(event)).into_owned(),
+                theme.text(),
+            ),
             Span::raw("      "),
-            Span::styled(summary(event), theme.dim()),
+            Span::styled(
+                crate::i18n::translate(theme.language, &summary(event)).into_owned(),
+                theme.dim(),
+            ),
         ]));
     }
     if lines.is_empty() {
         // Честная пустота лучше шума: §Recent Changes прямо это требует.
         lines.push(Line::from(Span::styled(
-            "no meaningful changes",
+            crate::i18n::choose(
+                theme.language,
+                "no meaningful changes",
+                "значимых изменений нет",
+            ),
             theme.dim(),
         )));
     }
     if snapshot.suppressed_noise > 0 {
         // Оператор обязан знать, что сырой поток существует и где он лежит.
         lines.push(Line::from(Span::styled(
-            format!(
-                "{} routine observations suppressed · : raw events",
-                snapshot.suppressed_noise
-            ),
+            if theme.language == pulse_core::config::Language::Russian {
+                format!(
+                    "{} рутинных наблюдений скрыто · : raw events",
+                    snapshot.suppressed_noise
+                )
+            } else {
+                format!(
+                    "{} routine observations suppressed · : raw events",
+                    snapshot.suppressed_noise
+                )
+            },
             theme.dim(),
         )));
     }

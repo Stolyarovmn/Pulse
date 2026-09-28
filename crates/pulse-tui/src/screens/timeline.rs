@@ -265,9 +265,12 @@ fn render_rail(
         .map_or(snapshot.at, |host| host.first_seen);
     let cursor = app.timeline.time_cursor.unwrap_or(snapshot.at);
     let label = if app.timeline.time_cursor.is_some() {
-        format!("HISTORY ◀ {cursor}")
+        format!(
+            "{} ◀ {cursor}",
+            crate::i18n::translate(theme.language, "HISTORY")
+        )
     } else {
-        "NOW".to_string()
+        crate::i18n::translate(theme.language, "NOW").into_owned()
     };
     let width = usize::from(area.width).max(8);
     let left = start.to_string();
@@ -308,13 +311,16 @@ fn render_rail(
     // прежней подписью границ наблюдения — пустой строки в кадре не бывает.
     let footer = if marks.is_empty() {
         Line::from(vec![
-            Span::styled("observation started", theme.dim()),
+            Span::styled(
+                crate::i18n::choose(theme.language, "observation started", "наблюдение началось"),
+                theme.dim(),
+            ),
             Span::raw(" ".repeat(width.saturating_sub(28))),
             Span::styled(
                 if app.timeline.time_cursor.is_some() {
-                    "cursor"
+                    crate::i18n::choose(theme.language, "cursor", "курсор")
                 } else {
-                    "live"
+                    crate::i18n::choose(theme.language, "live", "эфир")
                 },
                 theme.strong(),
             ),
@@ -355,7 +361,10 @@ fn render_state_river(
         .map_or(StateClass::Normal, StateClass::from_severity);
     classes.push(current);
 
-    let mut spans = vec![Span::styled("STATE  ", theme.dim())];
+    let mut spans = vec![Span::styled(
+        format!("{}  ", crate::i18n::translate(theme.language, "STATE")),
+        theme.dim(),
+    )];
     for (index, class) in classes.iter().enumerate() {
         if index > 0 {
             spans.push(Span::raw(" "));
@@ -368,10 +377,17 @@ fn render_state_river(
     if classes.len() <= 1 {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
-            format!(
-                "observed {} · collecting state history",
-                pulse_core::time::format_duration(observation(snapshot))
-            ),
+            if theme.language == pulse_core::config::Language::Russian {
+                format!(
+                    "наблюдается {} · собирается история состояния",
+                    pulse_core::time::format_duration(observation(snapshot))
+                )
+            } else {
+                format!(
+                    "observed {} · collecting state history",
+                    pulse_core::time::format_duration(observation(snapshot))
+                )
+            },
             theme.dim(),
         ));
     }
@@ -462,7 +478,10 @@ fn render_metric_lanes(
     // событий попало в окно.
     let (marks, count) = event_lane(story, (from, to), width, theme);
     let mut spans = vec![
-        Span::styled("EVENTS", theme.dim()),
+        Span::styled(
+            crate::i18n::translate(theme.language, "EVENTS").into_owned(),
+            theme.dim(),
+        ),
         Span::styled(format!("{count:>4} "), theme.text()),
     ];
     spans.extend(marks);
@@ -566,7 +585,11 @@ fn render_story(
     let mut lines: Vec<Line<'_>> = Vec::new();
     if story.is_empty() {
         lines.push(Line::from(Span::styled(
-            "no meaningful changes observed",
+            crate::i18n::choose(
+                theme.language,
+                "no meaningful changes observed",
+                "значимых изменений не наблюдалось",
+            ),
             theme.dim(),
         )));
     }
@@ -576,7 +599,12 @@ fn render_story(
         let selected_row = index == selected;
         let marker = crate::marks::event_mark(event.kind, event.severity, theme.capability);
         let summary = if event.kind == EventKind::ObservationStarted {
-            "PULSE observation started".to_string()
+            crate::i18n::choose(
+                theme.language,
+                "PULSE observation started",
+                "наблюдение PULSE началось",
+            )
+            .to_string()
         } else if event.is_group() {
             // Группа сообщает факт и его объём, а не повторяет одну строку N раз.
             format!("{} ×{}", event.name, event.count)
@@ -647,13 +675,19 @@ fn render_details(
         theme,
     )];
     let Some(event) = selected else {
-        lines.push(Line::from(Span::styled("nothing selected", theme.dim())));
+        lines.push(Line::from(Span::styled(
+            crate::i18n::choose(theme.language, "nothing selected", "ничего не выбрано"),
+            theme.dim(),
+        )));
         frame.render_widget(Paragraph::new(lines), area);
         return;
     };
 
     if event.kind == EventKind::ObservationStarted {
-        lines.push(Line::from(Span::styled("BASELINE", theme.strong())));
+        lines.push(Line::from(Span::styled(
+            crate::i18n::translate(theme.language, "BASELINE").into_owned(),
+            theme.strong(),
+        )));
         let total = event
             .detail
             .split(';')
@@ -671,7 +705,7 @@ fn render_details(
         let class = state_transition(event.kind);
         if let Some(class) = class {
             lines.push(pair(
-                "STATE",
+                &crate::i18n::translate(theme.language, "STATE"),
                 class.symbol(theme.capability).to_string(),
                 theme,
             ));
@@ -696,6 +730,7 @@ fn render_details(
 }
 
 fn pair<'a>(label: &str, value: String, theme: &'a Theme) -> Line<'a> {
+    let label = crate::i18n::translate(theme.language, label);
     Line::from(vec![
         Span::styled(format!("{label:<14}"), theme.dim()),
         Span::styled(value, theme.text()),

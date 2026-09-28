@@ -16,6 +16,7 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
+use pulse_core::config::Language;
 use pulse_core::problem::Severity;
 
 /// Уровень возможностей терминала.
@@ -103,6 +104,7 @@ pub enum Series {
 pub struct Theme {
     pub capability: Capability,
     pub glyphs: Glyphs,
+    pub language: Language,
 }
 
 impl Theme {
@@ -112,6 +114,7 @@ impl Theme {
         Theme {
             capability,
             glyphs: Glyphs::for_capability(capability),
+            language: Language::English,
         }
     }
 
@@ -120,7 +123,14 @@ impl Theme {
         Theme {
             capability,
             glyphs: Glyphs::for_capability(capability),
+            language: Language::English,
         }
+    }
+
+    #[must_use]
+    pub const fn with_language(mut self, language: Language) -> Self {
+        self.language = language;
+        self
     }
 
     /// Цвет по уровню возможностей: truecolor, 256 цветов, базовый.

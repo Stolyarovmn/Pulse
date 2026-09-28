@@ -1145,6 +1145,84 @@ fn inspector_footer_teaches_only_contextual_actions() {
 }
 
 #[test]
+fn settings_switch_language_and_nerd_icons_in_place() {
+    let snapshot = healthy();
+    let mut app = App::default();
+
+    let _ = app.dispatch(key(KeyCode::Char(',')), &snapshot);
+    assert!(matches!(app.overlay, Some(Overlay::Settings(_))));
+    let english = joined(80, 24, &snapshot, &mut app);
+    for required in ["SETTINGS", "Language", "Icons", "ui.language / ui.icons"] {
+        assert!(english.contains(required), "missing {required}: {english}");
+    }
+
+    let _ = app.dispatch(key(KeyCode::Right), &snapshot);
+    assert_eq!(app.language, pulse_core::config::Language::Russian);
+    let russian = joined(80, 24, &snapshot, &mut app);
+    for required in ["НАСТРОЙКИ", "Язык", "Русский", "Применено сейчас"]
+    {
+        assert!(russian.contains(required), "нет {required}: {russian}");
+    }
+
+    let _ = app.dispatch(key(KeyCode::Down), &snapshot);
+    let _ = app.dispatch(key(KeyCode::Right), &snapshot);
+    let _ = app.dispatch(key(KeyCode::Right), &snapshot);
+    assert_eq!(app.icons, pulse_core::config::IconSet::Nerd);
+    let nerd = joined(80, 24, &snapshot, &mut app);
+    for icon in [
+        crate::icons::Icon::Overview,
+        crate::icons::Icon::ProblemsScreen,
+        crate::icons::Icon::Entities,
+    ] {
+        assert!(
+            nerd.contains(icon.glyph(pulse_core::config::IconSet::Nerd)),
+            "preview не показывает {icon:?}: {nerd}"
+        );
+    }
+
+    let _ = app.dispatch(key(KeyCode::Esc), &snapshot);
+    assert!(app.overlay.is_none());
+    assert_eq!(app.language, pulse_core::config::Language::Russian);
+    assert_eq!(app.icons, pulse_core::config::IconSet::Nerd);
+    let overview = joined(120, 30, &snapshot, &mut app);
+    assert!(overview.contains("ОБЗОР"), "{overview}");
+    assert!(overview.contains("СОСТОЯНИЕ"), "{overview}");
+    assert!(!overview.contains("OVERVIEW"), "{overview}");
+    assert!(
+        overview.contains(crate::icons::Icon::Live.glyph(pulse_core::config::IconSet::Nerd)),
+        "Nerd набор действует вне Settings: {overview}"
+    );
+}
+
+#[test]
+fn settings_fit_required_sizes_and_ascii_fallback_is_honest() {
+    let snapshot = healthy();
+    for &(width, height) in REQUIRED_SIZES {
+        let mut app = App::default();
+        app.overlay = Some(Overlay::Settings(Default::default()));
+        let text = joined(width, height, &snapshot, &mut app);
+        assert!(text.contains("SETTINGS"), "{width}×{height}: {text}");
+        assert!(text.contains("Language"), "{width}×{height}: {text}");
+    }
+
+    let mut app = App::default()
+        .with_language(pulse_core::config::Language::Russian)
+        .with_icons(pulse_core::config::IconSet::Nerd);
+    app.overlay = Some(Overlay::Settings(Default::default()));
+    let lines = draw_with(
+        80,
+        24,
+        &snapshot,
+        &mut app,
+        &Theme::with_capability(Capability::Ascii),
+    );
+    let text = lines.join("\n");
+    assert!(text.is_ascii(), "ASCII fallback содержит Unicode: {text}");
+    assert!(text.contains("ASCII mode hides icons"), "{text}");
+    assert!(text.contains("Russian"), "выбор языка виден честно: {text}");
+}
+
+#[test]
 fn timeline_fresh_baseline_looks_like_time_machine() {
     let snapshot = healthy();
     let mut app = App::default();

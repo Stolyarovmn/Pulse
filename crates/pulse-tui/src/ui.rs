@@ -209,36 +209,126 @@ pub fn footer_line(
     width: u16,
     capability: Capability,
     icons: pulse_core::config::IconSet,
+    language: pulse_core::config::Language,
 ) -> String {
     use crate::icons::Icon;
+    use pulse_core::config::Language;
 
-    let mut parts: Vec<(&'static str, Option<Icon>)> = match preset {
+    let ru = language == Language::Russian;
+    let mut parts: Vec<(String, Option<Icon>)> = match preset {
         FooterPreset::Wide => vec![
-            ("[1]Overview", Some(Icon::Overview)),
-            ("[2]Problems", Some(Icon::ProblemsScreen)),
-            ("[3]Entities", Some(Icon::Entities)),
-            ("[4]Timeline", Some(Icon::Timeline)),
-            ("[/]Search", Some(Icon::Search)),
-            ("[:]Commands", Some(Icon::Commands)),
-            ("[?]Help", Some(Icon::Help)),
+            (
+                if ru { "[1]Обзор" } else { "[1]Overview" }.into(),
+                Some(Icon::Overview),
+            ),
+            (
+                if ru {
+                    "[2]Проблемы"
+                } else {
+                    "[2]Problems"
+                }
+                .into(),
+                Some(Icon::ProblemsScreen),
+            ),
+            (
+                if ru {
+                    "[3]Объекты"
+                } else {
+                    "[3]Entities"
+                }
+                .into(),
+                Some(Icon::Entities),
+            ),
+            (
+                if ru {
+                    "[4]История"
+                } else {
+                    "[4]Timeline"
+                }
+                .into(),
+                Some(Icon::Timeline),
+            ),
+            (
+                if ru { "[/]Поиск" } else { "[/]Search" }.into(),
+                Some(Icon::Search),
+            ),
+            (
+                if ru {
+                    "[:]Команды"
+                } else {
+                    "[:]Commands"
+                }
+                .into(),
+                Some(Icon::Commands),
+            ),
+            (
+                if ru {
+                    "[,]Настройки"
+                } else {
+                    "[,]Settings"
+                }
+                .into(),
+                Some(Icon::Settings),
+            ),
+            (
+                if ru { "[?]Справка" } else { "[?]Help" }.into(),
+                Some(Icon::Help),
+            ),
         ],
         FooterPreset::Medium => vec![
-            ("[1]Overview", Some(Icon::Overview)),
-            ("[2]Problems", Some(Icon::ProblemsScreen)),
-            ("[3]Entities", Some(Icon::Entities)),
-            ("[4]Timeline", Some(Icon::Timeline)),
-            ("[/]Search", Some(Icon::Search)),
-            ("[?]Help", Some(Icon::Help)),
+            (
+                if ru { "[1]Обзор" } else { "[1]Overview" }.into(),
+                Some(Icon::Overview),
+            ),
+            (
+                if ru {
+                    "[2]Проблемы"
+                } else {
+                    "[2]Problems"
+                }
+                .into(),
+                Some(Icon::ProblemsScreen),
+            ),
+            (
+                if ru {
+                    "[3]Объекты"
+                } else {
+                    "[3]Entities"
+                }
+                .into(),
+                Some(Icon::Entities),
+            ),
+            (
+                if ru {
+                    "[4]История"
+                } else {
+                    "[4]Timeline"
+                }
+                .into(),
+                Some(Icon::Timeline),
+            ),
+            (
+                if ru { "[/]Поиск" } else { "[/]Search" }.into(),
+                Some(Icon::Search),
+            ),
+            (
+                if ru { "[?]Справка" } else { "[?]Help" }.into(),
+                Some(Icon::Help),
+            ),
         ],
         FooterPreset::Narrow => vec![
-            ("[1]O", None),
-            ("[2]P", None),
-            ("[3]E", None),
-            ("[4]T", None),
-            ("[/]", None),
-            ("[?]", None),
+            ("[1]".into(), None),
+            ("[2]".into(), None),
+            ("[3]".into(), None),
+            ("[4]".into(), None),
+            ("[/]".into(), None),
+            ("[,]".into(), None),
+            ("[?]".into(), None),
         ],
-        FooterPreset::Tiny => vec![("[?]Help", Some(Icon::Help))],
+        FooterPreset::Tiny => vec![(
+            if ru { "[?]Справка" } else { "[?]Help" }.into(),
+            Some(Icon::Help),
+        )],
     };
     let set = if matches!(capability, Capability::Ascii) {
         pulse_core::config::IconSet::Off
@@ -246,22 +336,23 @@ pub fn footer_line(
         icons
     };
     let width = usize::from(width);
-    let draw = |parts: &[(&'static str, Option<Icon>)]| {
+    let draw = |parts: &[(String, Option<Icon>)]| {
         parts
             .iter()
             .map(|(label, icon)| match icon {
                 Some(icon) => format!("{}{label}", crate::icons::prefix(*icon, set)),
-                None => (*label).to_string(),
+                None => label.clone(),
             })
             .collect::<Vec<String>>()
             .join("  ")
     };
     while parts.len() > 1 && width_of(&draw(&parts)) > width {
-        // Сначала уступает Commands/Search, top-level map и Help остаются.
+        // Сначала уступают Settings/Commands/Search, top-level map и Help остаются.
         let remove = parts
             .iter()
-            .position(|(label, _)| *label == "[:]Commands")
-            .or_else(|| parts.iter().position(|(label, _)| *label == "[/]Search"))
+            .position(|(label, _)| label.starts_with("[,]"))
+            .or_else(|| parts.iter().position(|(label, _)| label.starts_with("[:]")))
+            .or_else(|| parts.iter().position(|(label, _)| label.starts_with("[/]")))
             .unwrap_or(parts.len().saturating_sub(2));
         parts.remove(remove);
     }
@@ -439,7 +530,13 @@ mod tests {
                     pulse_core::config::IconSet::Nerd,
                     pulse_core::config::IconSet::Unicode,
                 ] {
-                    let line = footer_line(preset, width, Capability::TrueColor, icons);
+                    let line = footer_line(
+                        preset,
+                        width,
+                        Capability::TrueColor,
+                        icons,
+                        pulse_core::config::Language::English,
+                    );
                     assert!(
                         line.chars().count() <= usize::from(width),
                         "футер {preset:?} с набором {icons:?} не влез в {width}: {line:?}"
@@ -458,6 +555,7 @@ mod tests {
             12,
             Capability::TrueColor,
             pulse_core::config::IconSet::Nerd,
+            pulse_core::config::Language::English,
         );
         assert!(!line.is_empty());
     }

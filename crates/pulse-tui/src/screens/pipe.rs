@@ -166,6 +166,7 @@ fn render_pipe(
             capability: theme.capability,
             boxes: state.boxes,
             icons: ctx.app.icons,
+            language: ctx.app.language,
         },
     );
 

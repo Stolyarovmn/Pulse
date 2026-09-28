@@ -114,6 +114,8 @@ pub enum Overlay {
     Palette(PaletteState),
     /// Пайп расследования: факты о выбранной сущности.
     Pipe(crate::pipe::PipeState),
+    /// Настройки интерфейса: язык и набор иконок.
+    Settings(SettingsState),
 }
 
 /// Состояние палитры: запрос, выбранная строка и режим справки.
@@ -139,6 +141,24 @@ impl PaletteState {
             help: true,
             ..Self::default()
         }
+    }
+}
+
+/// Состояние окна настроек. Значения живут в [`App`], чтобы изменение было
+/// видно остальным экранам в том же кадре.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SettingsState {
+    pub selected: usize,
+}
+
+impl SettingsState {
+    pub const ROWS: usize = 2;
+
+    fn move_by(&mut self, delta: isize) {
+        self.selected = self
+            .selected
+            .saturating_add_signed(delta)
+            .min(Self::ROWS.saturating_sub(1));
     }
 }
 
@@ -370,6 +390,8 @@ pub struct App {
     pub allow_actions: bool,
     /// Набор иконок категорий в пайпе (`ui.icons`).
     pub icons: pulse_core::config::IconSet,
+    /// Язык пользовательского интерфейса (`ui.language`).
+    pub language: pulse_core::config::Language,
     /// Кадр собран демонстрационным сценарием, а не реальным хостом.
     ///
     /// Обязано быть видно в каждом кадре: демо показывает настоящие
@@ -415,6 +437,7 @@ impl Default for App {
             status: String::new(),
             allow_actions: false,
             icons: pulse_core::config::IconSet::Off,
+            language: pulse_core::config::Language::English,
             show_self_metrics: false,
             pipe_cols: Cell::new(1),
             demo: false,
@@ -475,6 +498,12 @@ impl App {
     #[must_use]
     pub const fn with_icons(mut self, icons: pulse_core::config::IconSet) -> Self {
         self.icons = icons;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_language(mut self, language: pulse_core::config::Language) -> Self {
+        self.language = language;
         self
     }
 
@@ -543,15 +572,22 @@ impl App {
 
     /// Заголовок отражает overlay/Inspector, который реально видит оператор.
     #[must_use]
-    pub const fn title(&self) -> &'static str {
-        match self.overlay {
+    pub fn title(&self) -> String {
+        self.title_for(self.language)
+    }
+
+    #[must_use]
+    pub fn title_for(&self, language: pulse_core::config::Language) -> String {
+        let english = match &self.overlay {
             Some(Overlay::Palette(PaletteState { help: true, .. })) => "HELP",
             Some(Overlay::Search(_)) => "SEARCH",
             Some(Overlay::Palette(_)) => "COMMANDS",
             Some(Overlay::Pipe(_)) => "PIPE",
+            Some(Overlay::Settings(_)) => "SETTINGS",
             None if self.inspector.is_some() => "INSPECTOR",
             None => self.screen.title(),
-        }
+        };
+        crate::i18n::translate(language, english).into_owned()
     }
 
     /// Сообщает, сколько колонок сетки нарисовал последний кадр пайпа.
@@ -615,7 +651,12 @@ impl App {
                     self.navigate(screen, snapshot);
                 }
                 Scope::Inspector => {
-                    self.status = "open an entity first: Enter on a row".to_string();
+                    self.status = crate::i18n::choose(
+                        self.language,
+                        "open an entity first: Enter on a row",
+                        "сначала откройте объект: Enter на строке",
+                    )
+                    .to_string();
                     return Action::None;
                 }
                 Scope::Global => {}
@@ -630,7 +671,8 @@ impl App {
             Run::Story => {
                 self.timeline.raw_events = false;
                 self.screen = Screen::Timeline;
-                self.status = "story view".to_string();
+                self.status = crate::i18n::choose(self.language, "story view", "история инцидента")
+                    .to_string();
                 Action::None
             }
         }
@@ -784,7 +826,12 @@ impl App {
         self.inspector = None;
         self.screen = Screen::Timeline;
         self.pane = Pane::Story;
-        self.status = "raw events (secondary view)".to_string();
+        self.status = crate::i18n::choose(
+            self.language,
+            "raw events (secondary view)",
+            "сырые события (вторичный вид)",
+        )
+        .to_string();
     }
 
     /// Открывает contextual Inspector из concrete EntityKey.
@@ -873,7 +920,12 @@ impl App {
         };
         match overlay {
             Overlay::Palette(mut state) => {
-                let listed = crate::palette::listed(self.place(), state.help, &state.query);
+                let listed = crate::palette::listed_localized(
+                    self.place(),
+                    state.help,
+                    &state.query,
+                    self.language,
+                );
                 let last = listed.len().saturating_sub(1);
                 match key.code {
                     KeyCode::Esc => self.status.clear(),
@@ -899,7 +951,15 @@ impl App {
                     KeyCode::Enter => match listed.get(state.selected.min(last)) {
                         Some(command) => return self.run_command(command, snapshot),
                         None => {
-                            self.status = format!("no command matches \"{}\"", state.query);
+                            self.status = format!(
+                                "{} \"{}\"",
+                                crate::i18n::choose(
+                                    self.language,
+                                    "no command matches",
+                                    "нет подходящей команды",
+                                ),
+                                state.query
+                            );
                         }
                     },
                     KeyCode::Backspace => {
@@ -947,9 +1007,19 @@ impl App {
                     KeyCode::Char('v') => {
                         state.boxes = !state.boxes;
                         self.status = if state.boxes {
-                            "pipe: вид древом".to_string()
+                            crate::i18n::choose(
+                                self.language,
+                                "pipe: tree view",
+                                "расследование: вид древом",
+                            )
+                            .to_string()
                         } else {
-                            "pipe: вид отступами".to_string()
+                            crate::i18n::choose(
+                                self.language,
+                                "pipe: indented view",
+                                "расследование: вид отступами",
+                            )
+                            .to_string()
                         };
                         self.overlay = Some(Overlay::Pipe(state));
                     }
@@ -961,6 +1031,35 @@ impl App {
                     _ => self.overlay = Some(Overlay::Pipe(state)),
                 }
             }
+            Overlay::Settings(mut state) => match key.code {
+                KeyCode::Esc | KeyCode::Char(',') => self.status.clear(),
+                KeyCode::Up | KeyCode::Char('k') => {
+                    state.move_by(-1);
+                    self.overlay = Some(Overlay::Settings(state));
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    state.move_by(1);
+                    self.overlay = Some(Overlay::Settings(state));
+                }
+                KeyCode::Left | KeyCode::Char('h') => {
+                    match state.selected {
+                        0 => self.language = self.language.next(),
+                        1 => self.icons = self.icons.previous(),
+                        _ => {}
+                    }
+                    self.overlay = Some(Overlay::Settings(state));
+                }
+                KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') | KeyCode::Enter => {
+                    match state.selected {
+                        0 => self.language = self.language.next(),
+                        1 => self.icons = self.icons.next(),
+                        _ => {}
+                    }
+                    self.overlay = Some(Overlay::Settings(state));
+                }
+                KeyCode::Char('q') => return Action::Quit,
+                _ => self.overlay = Some(Overlay::Settings(state)),
+            },
             Overlay::Search(mut search) => match key.code {
                 KeyCode::Esc => {
                     self.screen = search.previous_screen;
@@ -989,7 +1088,12 @@ impl App {
                     self.inspector = None;
                     self.pane = Pane::Primary;
                     self.entities.selected = 0;
-                    self.status = "search filter applied".to_string();
+                    self.status = crate::i18n::choose(
+                        self.language,
+                        "search filter applied",
+                        "фильтр поиска применён",
+                    )
+                    .to_string();
                     // Первое совпадение становится selected после render.
                     let _ = snapshot;
                 }
@@ -1062,7 +1166,14 @@ impl App {
                         // за ней пошли.
                         InspectorList::Chain | InspectorList::Leads => inspector.follow(target),
                     },
-                    _ => self.status = "nothing to open".to_string(),
+                    _ => {
+                        self.status = crate::i18n::choose(
+                            self.language,
+                            "nothing to open",
+                            "нечего открывать",
+                        )
+                        .to_string();
+                    }
                 }
                 Some(Action::None)
             }
@@ -1226,7 +1337,12 @@ impl App {
                 // Пайп открывается на той сущности, которую оператор уже
                 // выбрал: расследование продолжается, а не начинается заново.
                 self.overlay = Some(Overlay::Pipe(crate::pipe::PipeState::default()));
-                self.status = "pipe: → раскрыть, ← свернуть, v вид, Esc выход".to_string();
+                self.status = crate::i18n::choose(
+                    self.language,
+                    "pipe: → expand, ← collapse, v view, Esc exit",
+                    "расследование: → раскрыть, ← свернуть, v вид, Esc выход",
+                )
+                .to_string();
                 Action::None
             }
             KeyCode::Char('m') if self.screen == Screen::Entities => {
@@ -1253,10 +1369,20 @@ impl App {
                 self.entities.selected = 0;
                 Action::None
             }
+            KeyCode::Char(',') => {
+                self.overlay = Some(Overlay::Settings(SettingsState::default()));
+                self.status.clear();
+                Action::None
+            }
             KeyCode::Char('p') => {
                 self.paused = !self.paused;
                 self.status = if self.paused {
-                    "paused display; collection continues".to_string()
+                    crate::i18n::choose(
+                        self.language,
+                        "paused display; collection continues",
+                        "экран на паузе; сбор продолжается",
+                    )
+                    .to_string()
                 } else {
                     String::new()
                 };
@@ -1274,7 +1400,12 @@ impl App {
                 if self.timeline.mark_a.is_some() && self.timeline.mark_b.is_some() {
                     Action::RunDiff
                 } else {
-                    self.status = "set markers A and B first".to_string();
+                    self.status = crate::i18n::choose(
+                        self.language,
+                        "set markers A and B first",
+                        "сначала установите метки A и B",
+                    )
+                    .to_string();
                     Action::None
                 }
             }
@@ -1286,7 +1417,8 @@ impl App {
     /// Enter действует только на focused visible pane (§172).
     fn open_focused(&mut self, snapshot: &Snapshot) {
         if !self.pane_is_visible(self.pane) {
-            self.status = "nothing to open".to_string();
+            self.status = crate::i18n::choose(self.language, "nothing to open", "нечего открывать")
+                .to_string();
             return;
         }
         match (self.screen, self.pane) {
@@ -1341,7 +1473,11 @@ impl App {
                 }
             }
             // TIME RAIL/Details не имеют неявной background selection.
-            _ => self.status = "nothing to open".to_string(),
+            _ => {
+                self.status =
+                    crate::i18n::choose(self.language, "nothing to open", "нечего открывать")
+                        .to_string();
+            }
         }
     }
 }

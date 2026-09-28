@@ -419,10 +419,11 @@ const fn check(ascii: bool) -> &'static str {
 fn heading(case: &Case<'_>, title: &str, list: Option<InspectorList>, width: u16) -> Line<'static> {
     let focused = list == Some(case.focus);
     let hint = match list {
-        Some(_) if focused => "  enter",
-        Some(_) => "  tab",
+        Some(_) if focused => crate::i18n::choose(case.theme.language, "  enter", "  ввод"),
+        Some(_) => crate::i18n::choose(case.theme.language, "  tab", "  tab"),
         None => "",
     };
+    let title = crate::i18n::translate(case.theme.language, title);
     let text = ui::section_title(
         &format!("{title}{hint}"),
         width.saturating_sub(2),
@@ -513,12 +514,24 @@ fn case_block(case: &Case<'_>, problems: &[&Problem], width: u16) -> Vec<Line<'s
         lines.push(Line::from(vec![
             Span::raw(ui::UNSELECTED),
             Span::styled(
-                format!("{} nothing open here", check(case.ascii())),
+                format!(
+                    "{} {}",
+                    check(case.ascii()),
+                    crate::i18n::choose(
+                        theme.language,
+                        "nothing open here",
+                        "здесь ничего не открыто",
+                    )
+                ),
                 theme.nominal(),
             ),
         ]));
         lines.push(Line::from(Span::styled(
-            format!("  no rule fired in {observed} of observation"),
+            if theme.language == pulse_core::config::Language::Russian {
+                format!("  за {observed} наблюдения ни одно правило не сработало")
+            } else {
+                format!("  no rule fired in {observed} of observation")
+            },
             theme.dim(),
         )));
         return lines;
@@ -548,10 +561,17 @@ fn case_block(case: &Case<'_>, problems: &[&Problem], width: u16) -> Vec<Line<'s
             ),
         ]));
         lines.push(Line::from(Span::styled(
-            format!(
-                "    held {held} · {} consecutive ticks · {}",
-                problem.streak, problem.entity_name
-            ),
+            if theme.language == pulse_core::config::Language::Russian {
+                format!(
+                    "    держится {held} · {} тактов подряд · {}",
+                    problem.streak, problem.entity_name
+                )
+            } else {
+                format!(
+                    "    held {held} · {} consecutive ticks · {}",
+                    problem.streak, problem.entity_name
+                )
+            },
             theme.dim(),
         )));
         // Ширина подписи — по самой длинной у этой проблемы плюс зазор:
@@ -588,7 +608,11 @@ fn leads_block(case: &Case<'_>, leads: &[Lead], width: u16) -> Vec<Line<'static>
     let mut lines = vec![heading(case, "LEADS", Some(InspectorList::Leads), width)];
     if leads.is_empty() {
         lines.push(Line::from(Span::styled(
-            "  no leads: nothing inside stands out",
+            crate::i18n::choose(
+                theme.language,
+                "  no leads: nothing inside stands out",
+                "  зацепок нет: внутри ничего не выделяется",
+            ),
             theme.dim(),
         )));
         return lines;
@@ -643,7 +667,11 @@ fn inside_block(case: &Case<'_>, rows: &[Descent], width: u16, room: usize) -> V
     let mut lines = vec![heading(case, &title, Some(InspectorList::Chain), width)];
     if rows.is_empty() {
         lines.push(Line::from(Span::styled(
-            "  nothing inside: the chain ends here",
+            crate::i18n::choose(
+                theme.language,
+                "  nothing inside: the chain ends here",
+                "  внутри ничего нет: цепочка заканчивается здесь",
+            ),
             theme.dim(),
         )));
         return lines;
@@ -669,7 +697,11 @@ fn inside_block(case: &Case<'_>, rows: &[Descent], width: u16, room: usize) -> V
 
     if start > 0 {
         lines.push(Line::from(Span::styled(
-            format!("  {} {start} above", up_arrow(case.ascii())),
+            if theme.language == pulse_core::config::Language::Russian {
+                format!("  {} выше: {start}", up_arrow(case.ascii()))
+            } else {
+                format!("  {} {start} above", up_arrow(case.ascii()))
+            },
             theme.faint(),
         )));
     }
@@ -724,7 +756,11 @@ fn inside_block(case: &Case<'_>, rows: &[Descent], width: u16, room: usize) -> V
     let below = rows.len().saturating_sub(start + visible);
     if below > 0 {
         lines.push(Line::from(Span::styled(
-            format!("  {} {below} more", down_arrow(case.ascii())),
+            if theme.language == pulse_core::config::Language::Russian {
+                format!("  {} ещё {below}", down_arrow(case.ascii()))
+            } else {
+                format!("  {} {below} more", down_arrow(case.ascii()))
+            },
             theme.faint(),
         )));
     }
@@ -769,7 +805,10 @@ fn around_block(case: &Case<'_>, steps: &[Step], width: u16) -> Vec<Line<'static
     };
     for (index, step) in steps.iter().enumerate() {
         let mut spans = vec![
-            Span::styled(format!("{:<11}", step.label), theme.dim()),
+            Span::styled(
+                format!("{:<11}", crate::i18n::translate(theme.language, step.label)),
+                theme.dim(),
+            ),
             Span::styled(
                 ui::truncate(&step.name, name_width, theme.capability),
                 theme.text(),
@@ -792,7 +831,11 @@ fn around_block(case: &Case<'_>, steps: &[Step], width: u16) -> Vec<Line<'static
     // Ресурсы — контекст, а не звенья: диском пользуются десятки несвязанных
     // сервисов, и переход в него делал бы из ресурса пересадочный узел.
     if !resources.is_empty() {
-        let mut spans = vec![Span::styled(format!("  {:<11}", "resources"), theme.dim())];
+        let resources_label = crate::i18n::translate(theme.language, "resources");
+        let mut spans = vec![Span::styled(
+            format!("  {resources_label:<11}"),
+            theme.dim(),
+        )];
         for (index, resource) in resources.iter().take(8).enumerate() {
             if index > 0 {
                 spans.push(Span::raw("  "));
@@ -819,6 +862,7 @@ fn around_block(case: &Case<'_>, steps: &[Step], width: u16) -> Vec<Line<'static
 
 /// Пара «подпись — значение» досье.
 fn fact(label: &str, value: Vec<Span<'static>>, theme: &Theme) -> Line<'static> {
+    let label = crate::i18n::translate(theme.language, label);
     let mut spans = vec![Span::styled(format!("  {label:<LABEL$}"), theme.dim())];
     spans.extend(value);
     Line::from(spans)

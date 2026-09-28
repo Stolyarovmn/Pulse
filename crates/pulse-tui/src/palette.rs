@@ -303,6 +303,13 @@ pub const COMMANDS: &[Command] = &[
         KeyCode::Char('p'),
     ),
     key(
+        "Settings",
+        ",",
+        "language and icon set",
+        Scope::Global,
+        KeyCode::Char(','),
+    ),
+    key(
         "Help",
         "? / F1",
         "every command of every screen",
@@ -345,6 +352,16 @@ impl Place {
 /// предлагается.
 #[must_use]
 pub fn listed(place: Place, help: bool, query: &str) -> Vec<&'static Command> {
+    listed_localized(place, help, query, pulse_core::config::Language::English)
+}
+
+#[must_use]
+pub fn listed_localized(
+    place: Place,
+    help: bool,
+    query: &str,
+    language: pulse_core::config::Language,
+) -> Vec<&'static Command> {
     let order = |command: &Command| -> u8 {
         match command.scope {
             scope if scope != Scope::Global && place.covers(scope) => 0,
@@ -360,9 +377,8 @@ pub fn listed(place: Place, help: bool, query: &str) -> Vec<&'static Command> {
         .iter()
         .filter(|command| help || place.covers(command.scope))
         .filter(|command| !(help && command.title == "Help"))
-        .filter(|command| matches(command, query))
+        .filter(|command| matches_localized(command, query, language))
         .collect();
-    // Стабильная сортировка: внутри группы сохраняется порядок таблицы.
     out.sort_by_key(|command| order(command));
     out
 }
@@ -377,6 +393,27 @@ pub fn matches(command: &Command, query: &str) -> bool {
         command.hint,
         command.keys,
         command.scope.label()
+    )
+    .to_lowercase();
+    query
+        .split_whitespace()
+        .all(|word| haystack.contains(&word.to_lowercase()))
+}
+
+#[must_use]
+fn matches_localized(
+    command: &Command,
+    query: &str,
+    language: pulse_core::config::Language,
+) -> bool {
+    if matches(command, query) {
+        return true;
+    }
+    let haystack = format!(
+        "{} {} {}",
+        crate::i18n::translate(language, command.title),
+        crate::i18n::translate(language, command.hint),
+        crate::i18n::translate(language, command.scope.label())
     )
     .to_lowercase();
     query
@@ -423,5 +460,16 @@ mod tests {
             by_key.first().map(|command| command.title),
             Some("Previous list")
         );
+    }
+
+    #[test]
+    fn russian_palette_searches_translated_titles() {
+        let found = listed_localized(
+            Place::Screen(Screen::Overview),
+            true,
+            "настройки",
+            pulse_core::config::Language::Russian,
+        );
+        assert_eq!(found.first().map(|command| command.title), Some("Settings"));
     }
 }

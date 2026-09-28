@@ -53,9 +53,9 @@ pub(crate) fn render(
         .split(area);
 
     let mode = if app.entities.technical_view {
-        "technical"
+        crate::i18n::choose(theme.language, "technical", "технический")
     } else {
-        "logical"
+        crate::i18n::choose(theme.language, "logical", "логический")
     };
     let ascii = matches!(theme.capability, crate::theme::Capability::Ascii);
     // Раздел 178: активный search обязан быть виден как filter, а не молча
@@ -65,9 +65,12 @@ pub(crate) fn render(
         app.entities.search_filter.as_deref(),
         app.entities.kind_filter,
     ) {
-        (Some(query), _) => format!("search(\"{query}\")"),
+        (Some(query), _) => format!(
+            "{}(\"{query}\")",
+            crate::i18n::choose(theme.language, "search", "поиск")
+        ),
         (None, Some(kind)) => kind.as_str().to_string(),
-        (None, None) => "all".to_string(),
+        (None, None) => crate::i18n::choose(theme.language, "all", "все").to_string(),
     };
     let total = snapshot
         .entities
@@ -81,12 +84,21 @@ pub(crate) fn render(
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(format!("ENTITIES {count}   "), theme.strong()),
             Span::styled(
                 format!(
-                    "sort:{}{}   filter:{filter}   view:{mode}",
-                    app.entities.sort.label(),
+                    "{} {count}   ",
+                    crate::i18n::translate(theme.language, "ENTITIES")
+                ),
+                theme.strong(),
+            ),
+            Span::styled(
+                format!(
+                    "{}:{}{}   {}:{filter}   {}:{mode}",
+                    crate::i18n::choose(theme.language, "sort", "сорт"),
+                    crate::i18n::translate(theme.language, app.entities.sort.label()),
                     app.entities.direction.symbol(ascii),
+                    crate::i18n::choose(theme.language, "filter", "фильтр"),
+                    crate::i18n::choose(theme.language, "view", "вид"),
                 ),
                 theme.dim(),
             ),
@@ -213,7 +225,10 @@ pub(crate) fn render_inspector_pane(
         .max();
     let state = crate::rows::state_of(snapshot, entity, severity);
     lines.push(Line::from(vec![
-        Span::styled("STATE ", theme.dim()),
+        Span::styled(
+            format!("{} ", crate::i18n::translate(theme.language, "STATE")),
+            theme.dim(),
+        ),
         Span::styled(
             state.symbol(theme.capability).to_string(),
             state.style(theme),
@@ -222,18 +237,26 @@ pub(crate) fn render_inspector_pane(
     lines.push(Line::from(""));
 
     // Числа: только те, что реально есть у этого вида сущности.
-    lines.push(Line::from(Span::styled("SUMMARY", theme.dim())));
+    lines.push(Line::from(Span::styled(
+        crate::i18n::translate(theme.language, "SUMMARY").into_owned(),
+        theme.dim(),
+    )));
     for (label, value) in summary_rows(snapshot, entity) {
+        let label = crate::i18n::translate(theme.language, label);
+        let value = crate::i18n::translate(theme.language, &value);
         lines.push(Line::from(vec![
             Span::styled(format!("{label:<12}"), theme.dim()),
-            Span::styled(value, theme.text()),
+            Span::styled(value.into_owned(), theme.text()),
         ]));
     }
 
     let relations = logical_relation_targets(snapshot, logical);
     if !relations.is_empty() {
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("RELATIONS", theme.dim())));
+        lines.push(Line::from(Span::styled(
+            crate::i18n::translate(theme.language, "RELATIONS").into_owned(),
+            theme.dim(),
+        )));
         for (index, target) in relations.iter().enumerate() {
             let selected = focused && index == relation_selected;
             lines.push(Line::from(vec![
@@ -245,7 +268,13 @@ pub(crate) fn render_inspector_pane(
                         theme.dim()
                     },
                 ),
-                Span::styled(format!("{:<12}", target.label), theme.dim()),
+                Span::styled(
+                    format!(
+                        "{:<12}",
+                        crate::i18n::translate(theme.language, target.label)
+                    ),
+                    theme.dim(),
+                ),
                 Span::styled(
                     ui::truncate(&target.name, width.saturating_sub(15), theme.capability),
                     if selected {
@@ -260,7 +289,10 @@ pub(crate) fn render_inspector_pane(
 
     if !entity.labels.is_empty() {
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("LABELS", theme.dim())));
+        lines.push(Line::from(Span::styled(
+            crate::i18n::translate(theme.language, "LABELS").into_owned(),
+            theme.dim(),
+        )));
         for (key, value) in entity.labels.iter().take(6) {
             lines.push(Line::from(vec![
                 Span::styled(format!("{key:<12}"), theme.dim()),

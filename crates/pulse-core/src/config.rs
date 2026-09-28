@@ -288,6 +288,36 @@ pub struct Ui {
     /// с эмулятором, а не со шрифтом), поэтому выбор остаётся за оператором.
     /// Что установить — в `docs/GRAPH-VIEW.md`.
     pub icons: IconSet,
+    /// Язык пользовательского интерфейса.
+    pub language: Language,
+}
+
+/// Язык пользовательского интерфейса.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Language {
+    #[default]
+    #[serde(rename = "en", alias = "english")]
+    English,
+    #[serde(rename = "ru", alias = "russian", alias = "русский")]
+    Russian,
+}
+
+impl Language {
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::English => Self::Russian,
+            Self::Russian => Self::English,
+        }
+    }
+
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::English => "en",
+            Self::Russian => "ru",
+        }
+    }
 }
 
 /// Какой набор иконок рисовать.
@@ -300,6 +330,35 @@ pub enum IconSet {
     Nerd,
     /// Геометрические символы обычного моноширинного шрифта.
     Unicode,
+}
+
+impl IconSet {
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Off => Self::Unicode,
+            Self::Unicode => Self::Nerd,
+            Self::Nerd => Self::Off,
+        }
+    }
+
+    #[must_use]
+    pub const fn previous(self) -> Self {
+        match self {
+            Self::Off => Self::Nerd,
+            Self::Unicode => Self::Off,
+            Self::Nerd => Self::Unicode,
+        }
+    }
+
+    #[must_use]
+    pub const fn config_name(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Nerd => "nerd",
+            Self::Unicode => "unicode",
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for IconSet {
@@ -341,6 +400,7 @@ impl Default for Ui {
             ascii: false,
             show_self_metrics: false,
             icons: IconSet::Off,
+            language: Language::English,
         }
     }
 }
@@ -722,5 +782,18 @@ mod tests {
         let back: Config = toml::from_str(&text).expect("разбор");
         assert_eq!(back.general.interval_ms, c.general.interval_ms);
         assert_eq!(back.security.redact, c.security.redact);
+    }
+
+    #[test]
+    fn ui_language_and_icons_roundtrip_and_accept_names() {
+        let parsed: Config =
+            toml::from_str("[ui]\nlanguage = \"ru\"\nicons = \"nerd\"\n").expect("config");
+        assert_eq!(parsed.ui.language, Language::Russian);
+        assert_eq!(parsed.ui.icons, IconSet::Nerd);
+
+        let text = toml::to_string(&parsed).expect("serialize");
+        let back: Config = toml::from_str(&text).expect("roundtrip");
+        assert_eq!(back.ui.language, Language::Russian);
+        assert_eq!(back.ui.icons, IconSet::Nerd);
     }
 }

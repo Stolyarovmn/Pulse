@@ -47,6 +47,7 @@ pub enum Icon {
     Search,
     Commands,
     Help,
+    Settings,
     Live,
     Paused,
     // Серьёзность.
@@ -57,7 +58,7 @@ pub enum Icon {
 
 impl Icon {
     /// Полный перечень: нужен тестам покрытия набора.
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 33] = [
         Self::Exe,
         Self::User,
         Self::Cwd,
@@ -85,6 +86,7 @@ impl Icon {
         Self::Search,
         Self::Commands,
         Self::Help,
+        Self::Settings,
         Self::Live,
         Self::Paused,
         Self::Warn,
@@ -136,6 +138,7 @@ impl Icon {
             Self::Search => "\u{f002}",
             Self::Commands => "\u{f120}",
             Self::Help => "\u{f059}",
+            Self::Settings => "\u{f1de}",
             Self::Live => "\u{f111}",
             Self::Paused => "\u{f04c}",
             Self::Warn => "\u{f071}",
@@ -177,6 +180,7 @@ impl Icon {
             Self::Timeline => "◷",
             Self::Search => "◎",
             Self::Commands => "▷",
+            Self::Settings => "◧",
             Self::Help => "◊",
             Self::Live => "●",
             Self::Paused => "◫",

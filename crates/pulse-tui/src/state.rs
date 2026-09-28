@@ -416,6 +416,25 @@ impl StateGlyph {
     /// Вердикт одной строкой: то, что оператор читает после формы.
     #[must_use]
     pub fn verdict(&self) -> &'static str {
+        self.verdict_for(pulse_core::config::Language::English)
+    }
+
+    #[must_use]
+    pub fn verdict_for(&self, language: pulse_core::config::Language) -> &'static str {
+        use pulse_core::config::Language;
+        if language == Language::Russian {
+            if !self.has_data() {
+                return "НЕТ ДАННЫХ";
+            }
+            return match self.overall() {
+                StateClass::Failed => "ФУНКЦИЯ ПОТЕРЯНА",
+                StateClass::Critical => "КРИТИЧНО",
+                StateClass::Warning => "ДЕГРАДАЦИЯ",
+                StateClass::Degraded => "ВНИМАНИЕ",
+                StateClass::Saturated => "ВЫСОКАЯ НАГРУЗКА",
+                _ => "СИСТЕМА В НОРМЕ",
+            };
+        }
         if !self.has_data() {
             return "NO DATA";
         }
@@ -456,6 +475,54 @@ impl StateGlyph {
     /// строка читается как подпись к форме, а не как отдельный прибор.
     #[must_use]
     pub fn verdict_detail(&self, capability: Capability) -> String {
+        self.verdict_detail_for(capability, pulse_core::config::Language::English)
+    }
+
+    #[must_use]
+    pub fn verdict_detail_for(
+        &self,
+        capability: Capability,
+        language: pulse_core::config::Language,
+    ) -> String {
+        if language == pulse_core::config::Language::Russian {
+            if !self.has_data() {
+                return "измерений пока нет".to_string();
+            }
+            let what = match self.overall() {
+                StateClass::Failed => "функция потеряна",
+                StateClass::Critical => "критическое состояние",
+                StateClass::Warning => "требуется внимание",
+                StateClass::Degraded => "частичная деградация",
+                StateClass::Saturated => "повышенная активность",
+                _ => "все системы в норме",
+            };
+            let ascii = matches!(capability, Capability::Ascii);
+            let dot = if ascii { " - " } else { " · " };
+            return match self.lean() {
+                Some((sector, load)) => {
+                    let arrow = match (sector, ascii) {
+                        (Sector::Cpu, false) => "↑",
+                        (Sector::Memory, false) => "→",
+                        (Sector::Io, false) => "↓",
+                        (Sector::Net, false) => "←",
+                        (Sector::Cpu, true) => "^",
+                        (Sector::Memory, true) => ">",
+                        (Sector::Io, true) => "v",
+                        (Sector::Net, true) => "<",
+                        (Sector::Core, _) => "",
+                    };
+                    let sector = match sector {
+                        Sector::Cpu => "cpu",
+                        Sector::Memory => "память",
+                        Sector::Io => "io",
+                        Sector::Net => "сеть",
+                        Sector::Core => "ядро",
+                    };
+                    format!("{what}{dot}уклон {arrow} {sector} {:.0}%", load * 100.0)
+                }
+                None => format!("{what}{dot}по центру"),
+            };
+        }
         if !self.has_data() {
             return "no measurements yet".to_string();
         }

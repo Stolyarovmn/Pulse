@@ -67,7 +67,10 @@ fn render_empty(
 
     let mut lines = vec![
         Line::from(Span::styled(
-            format!("{mark} NO ACTIVE PROBLEMS"),
+            format!(
+                "{mark} {}",
+                crate::i18n::translate(theme.language, "NO ACTIVE PROBLEMS")
+            ),
             theme.strong(),
         )),
         Line::from(""),
@@ -77,12 +80,20 @@ fn render_empty(
     if resolved.is_empty() {
         // Истории решённых проблем нет: говорим только то, что знаем.
         lines.push(Line::from(Span::styled(
-            format!("No problems have been observed since PULSE started {observed} ago."),
+            if theme.language == pulse_core::config::Language::Russian {
+                format!("С запуска PULSE {observed} назад проблем не наблюдалось.")
+            } else {
+                format!("No problems have been observed since PULSE started {observed} ago.")
+            },
             theme.text(),
         )));
     } else {
         lines.push(Line::from(Span::styled(
-            format!("observed nominal for {observed}"),
+            if theme.language == pulse_core::config::Language::Russian {
+                format!("норма наблюдается {observed}")
+            } else {
+                format!("observed nominal for {observed}")
+            },
             theme.text(),
         )));
     }
@@ -99,7 +110,11 @@ fn render_empty(
         lines.push(section("RECENT RESOLVED", width, plan, theme));
         if resolved.is_empty() {
             lines.push(Line::from(Span::styled(
-                format!("no resolved problems in {observed} of observation"),
+                if theme.language == pulse_core::config::Language::Russian {
+                    format!("за {observed} наблюдения решённых проблем нет")
+                } else {
+                    format!("no resolved problems in {observed} of observation")
+                },
                 theme.dim(),
             )));
         } else {
@@ -107,7 +122,14 @@ fn render_empty(
             lines.push(Line::from(""));
             let arrow = if ascii { "->" } else { "↵" };
             lines.push(Line::from(Span::styled(
-                format!("{arrow} open incident history"),
+                format!(
+                    "{arrow} {}",
+                    crate::i18n::choose(
+                        theme.language,
+                        "open incident history",
+                        "открыть историю инцидентов",
+                    )
+                ),
                 theme.dim(),
             )));
         }
@@ -238,7 +260,10 @@ fn render_detail(
     let mut lines = vec![section(&title, area.width, plan, theme)];
 
     // WHY: только измеренные доказательства, без слов о причинности.
-    lines.push(Line::from(Span::styled("WHY", theme.dim())));
+    lines.push(Line::from(Span::styled(
+        crate::i18n::translate(theme.language, "WHY").into_owned(),
+        theme.dim(),
+    )));
     if problem.evidence.is_empty() {
         lines.push(Line::from(Span::styled(
             problem.summary.clone(),
@@ -264,7 +289,10 @@ fn render_detail(
     // AFFECTED: сущности, у которых есть свои открытые проблемы.
     if plan.shows(Priority::P2) {
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("AFFECTED", theme.dim())));
+        lines.push(Line::from(Span::styled(
+            crate::i18n::translate(theme.language, "AFFECTED").into_owned(),
+            theme.dim(),
+        )));
         let mut affected: Vec<Span<'_>> = Vec::new();
         for other in &snapshot.problems {
             if other.id == problem.id {
@@ -290,7 +318,10 @@ fn render_detail(
     // RECENT: последовательность фактов. Порядок - не причинность (раздел 47).
     if plan.shows(Priority::P3) {
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("RECENT", theme.dim())));
+        lines.push(Line::from(Span::styled(
+            crate::i18n::translate(theme.language, "RECENT").into_owned(),
+            theme.dim(),
+        )));
         let since = format_duration(std::time::Duration::from_millis(
             snapshot
                 .at
@@ -306,7 +337,14 @@ fn render_detail(
                 theme.severity(problem.severity),
             ),
             Span::raw(" "),
-            Span::styled(format!("held for {since}"), theme.text()),
+            Span::styled(
+                if theme.language == pulse_core::config::Language::Russian {
+                    format!("держится {since}")
+                } else {
+                    format!("held for {since}")
+                },
+                theme.text(),
+            ),
             Span::raw("  "),
             Span::styled(
                 format!("consecutive ticks: {}", problem.streak),

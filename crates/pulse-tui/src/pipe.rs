@@ -1026,6 +1026,7 @@ pub struct Look {
     pub capability: Capability,
     pub boxes: bool,
     pub icons: IconSet,
+    pub language: pulse_core::config::Language,
 }
 
 impl Look {
@@ -1045,6 +1046,10 @@ impl Look {
             String::new()
         }
     }
+
+    fn label(self, branch: Branch) -> std::borrow::Cow<'static, str> {
+        crate::i18n::translate(self.language, branch.label())
+    }
 }
 
 fn render_indent(
@@ -1058,15 +1063,21 @@ fn render_indent(
     let boxes_requested = style.boxes;
     let set = Charset::thin(capability);
     let mut out: Vec<RenderedLine> = Vec::new();
-    let mut head = format!("PIPE {title}");
+    let mut head = format!("{} {title}", crate::i18n::translate(style.language, "PIPE"));
     if boxes_requested {
-        // Молча подменять вид нельзя: оператор должен видеть, что кадр сужен.
-        head.push_str(&format!("  (граф-режим требует {GRAPH_MIN_COLS} колонок)"));
+        head.push_str(&format!(
+            "  ({})",
+            crate::i18n::choose(
+                style.language,
+                "graph view needs 100 columns",
+                "для графа нужно 100 колонок",
+            )
+        ));
     }
     out.push((head, None));
     let label_width = Branch::ALL
         .iter()
-        .map(|branch| crate::ui::width_of(branch.label()))
+        .map(|branch| crate::ui::width_of(&style.label(*branch)))
         .max()
         .unwrap_or(8);
     // Ширина колонки считается с иконкой: иначе включение набора сдвигает
@@ -1085,11 +1096,8 @@ fn render_indent(
             out.push((format!("{} {}", set.pipe, limb.label(capability)), None));
         }
         let marker = if node.branch == selected { "◂" } else { " " };
-        let label = format!(
-            "{}{:<label_width$}",
-            style.prefix(node.branch),
-            node.branch.label()
-        );
+        let branch_label = style.label(node.branch);
+        let label = format!("{}{branch_label:<label_width$}", style.prefix(node.branch),);
         if !node.expanded {
             out.push((
                 format!("{stem} {label} {} {marker}", set.collapsed),
@@ -1197,7 +1205,7 @@ fn single_box(node: &Node, selected: Branch, style: Look) -> Vec<RenderedLine> {
     } else {
         Charset::thin(capability)
     };
-    let label = format!("{}{}", style.prefix(node.branch), node.branch.label());
+    let label = format!("{}{}", style.prefix(node.branch), style.label(node.branch));
     let mut out: Vec<RenderedLine> = Vec::new();
     let suffix = if node.expanded {
         String::new()
@@ -1533,6 +1541,7 @@ mod tests {
             capability: Capability::TrueColor,
             boxes,
             icons: IconSet::Off,
+            language: pulse_core::config::Language::English,
         }
     }
 
@@ -1541,6 +1550,7 @@ mod tests {
             capability: Capability::Ascii,
             boxes: true,
             icons: IconSet::Nerd,
+            language: pulse_core::config::Language::English,
         }
     }
 
@@ -1574,7 +1584,7 @@ mod tests {
             look(state.boxes),
         );
         assert!(
-            narrow[0].0.contains("граф-режим требует"),
+            narrow[0].0.contains("graph view needs"),
             "откат на узком кадре обязан быть назван в заголовке"
         );
     }
@@ -1616,6 +1626,7 @@ mod tests {
                 capability: Capability::TrueColor,
                 boxes: false,
                 icons: IconSet::Nerd,
+                language: pulse_core::config::Language::English,
             },
         );
         for (plain_line, nerd_line) in plain.iter().zip(nerd.iter()).skip(1) {
@@ -1707,8 +1718,17 @@ mod tests {
         let nodes = build_stub();
         let lines = render("proc 851", &nodes, Branch::Exe, 60, look(true));
         assert!(
-            lines[0].0.contains("граф-режим требует"),
+            lines[0].0.contains("graph view needs"),
             "подмена вида обязана быть подписана: {:?}",
+            lines[0].0
+        );
+
+        let mut russian = look(true);
+        russian.language = pulse_core::config::Language::Russian;
+        let lines = render("proc 851", &nodes, Branch::Exe, 60, russian);
+        assert!(
+            lines[0].0.contains("для графа нужно"),
+            "русский fallback обязан быть локализован: {:?}",
             lines[0].0
         );
     }

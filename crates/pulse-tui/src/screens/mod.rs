@@ -14,6 +14,7 @@ pub mod overview;
 pub mod palette;
 pub mod pipe;
 pub mod problems;
+pub mod settings;
 pub mod timeline;
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -49,6 +50,13 @@ pub fn render(
     history: Option<&crate::series::SeriesReader<'_>>,
 ) {
     let area = frame.area();
+    let effective_language = if theme.capability == crate::theme::Capability::Ascii {
+        pulse_core::config::Language::English
+    } else {
+        app.language
+    };
+    let localized_theme = theme.with_language(effective_language);
+    let theme = &localized_theme;
     let story_len = u16::try_from(story_events(snapshot).len()).unwrap_or(u16::MAX);
     let plan = app.layout.plan(LayoutContext {
         width: area.width,
@@ -114,6 +122,7 @@ pub fn render(
     match app.overlay.clone() {
         Some(Overlay::Palette(state)) => palette::render(frame, body, app, &state, theme),
         Some(Overlay::Search(_)) => render_input_overlay(frame, body, snapshot, app, theme),
+        Some(Overlay::Settings(state)) => settings::render(frame, body, app, state, theme),
         _ => {}
     }
 }
@@ -179,9 +188,17 @@ fn render_input_overlay(
         Some(Overlay::Search(search)) => {
             let matches = app.derived(snapshot).rows.len();
             (
-                " SEARCH ",
-                format!("SEARCH / {}█", search.query),
-                format!("{matches} matches   Enter apply/open   Esc cancel"),
+                crate::i18n::choose(theme.language, " SEARCH ", " ПОИСК "),
+                format!(
+                    "{} / {}█",
+                    crate::i18n::choose(theme.language, "SEARCH", "ПОИСК"),
+                    search.query
+                ),
+                if theme.language == pulse_core::config::Language::Russian {
+                    format!("{matches} совпадений   Enter применить/открыть   Esc отмена")
+                } else {
+                    format!("{matches} matches   Enter apply/open   Esc cancel")
+                },
             )
         }
         _ => return,
@@ -208,21 +225,39 @@ fn render_too_small(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     let lines = vec![
         Line::from(Span::styled("PULSE", theme.strong())),
         Line::from(""),
-        Line::from(Span::styled("terminal too small", theme.text())),
         Line::from(Span::styled(
-            format!(
-                "need at least {}×{}",
-                crate::layout::MIN_WIDTH,
-                crate::layout::MIN_HEIGHT
-            ),
+            crate::i18n::choose(theme.language, "terminal too small", "терминал слишком мал"),
+            theme.text(),
+        )),
+        Line::from(Span::styled(
+            if theme.language == pulse_core::config::Language::Russian {
+                format!(
+                    "нужно не меньше {}×{}",
+                    crate::layout::MIN_WIDTH,
+                    crate::layout::MIN_HEIGHT
+                )
+            } else {
+                format!(
+                    "need at least {}×{}",
+                    crate::layout::MIN_WIDTH,
+                    crate::layout::MIN_HEIGHT
+                )
+            },
             theme.dim(),
         )),
         Line::from(Span::styled(
-            format!("current {}×{}", area.width, area.height),
+            if theme.language == pulse_core::config::Language::Russian {
+                format!("сейчас {}×{}", area.width, area.height)
+            } else {
+                format!("current {}×{}", area.width, area.height)
+            },
             theme.dim(),
         )),
         Line::from(""),
-        Line::from(Span::styled("q quit", theme.dim())),
+        Line::from(Span::styled(
+            crate::i18n::choose(theme.language, "q quit", "q выход"),
+            theme.dim(),
+        )),
     ];
     frame.render_widget(Paragraph::new(lines), area);
 }
@@ -244,7 +279,7 @@ fn render_header(
     plan: &LayoutPlan,
     theme: &Theme,
 ) {
-    let live = ui::live_label(app.paused, plan.header);
+    let live = crate::i18n::translate(theme.language, ui::live_label(app.paused, plan.header));
     let live_style = if app.paused {
         theme.severity(pulse_core::problem::Severity::Info)
     } else {
@@ -285,7 +320,7 @@ fn render_header(
     if !mode_icon.is_empty() {
         spans.push(Span::styled(mode_icon, live_style));
     }
-    spans.push(Span::styled(live, live_style));
+    spans.push(Span::styled(live.into_owned(), live_style));
     spans.push(Span::raw(" "));
     spans.push(Span::styled(ui::live_mark(theme.capability), live_style));
 
@@ -295,7 +330,7 @@ fn render_header(
     if app.demo {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
-            " DEMO ",
+            format!(" {} ", crate::i18n::translate(theme.language, "DEMO")),
             theme.severity(pulse_core::problem::Severity::Warn),
         ));
     }
@@ -323,18 +358,19 @@ fn render_header(
         spans.push(Span::raw("   "));
         spans.push(Span::styled(
             format!(
-                "up {}",
+                "{} {}",
+                crate::i18n::choose(theme.language, "up", "аптайм"),
                 format_duration(std::time::Duration::from_secs(uptime as u64))
             ),
             theme.dim(),
         ));
         // Текущий экран: оператор всегда знает, где он.
         spans.push(Span::raw("   "));
-        spans.push(Span::styled(app.title(), theme.dim()));
+        spans.push(Span::styled(app.title_for(theme.language), theme.dim()));
     } else {
         // Current mode — P0 даже в compact header (v0.9 §171).
         spans.push(Span::raw("  "));
-        spans.push(Span::styled(app.title(), theme.dim()));
+        spans.push(Span::styled(app.title_for(theme.language), theme.dim()));
     }
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -354,7 +390,7 @@ fn render_footer(
     theme: &Theme,
 ) {
     let hints = footer_hints(app, plan, area.width, theme.capability);
-    let mut spans = footer_spans(&hints, active_marker(app), theme);
+    let mut spans = footer_spans(&hints, active_marker(app, theme.capability), theme);
     if app.show_self_metrics {
         let self_cost = self_metrics_text(snapshot);
         let used =
@@ -379,42 +415,94 @@ fn footer_hints(
     width: u16,
     capability: crate::theme::Capability,
 ) -> String {
-    let context: Option<&[&str]> = match &app.overlay {
-        Some(Overlay::Palette(state)) if state.help => Some(&[
-            "[HELP]  [type]Filter  [↑↓]Select  [Enter]Run  [? Esc]Close",
-            "[HELP]  [type]Filter  [Enter]Run  [Esc]Close",
-            "[HELP]  [Esc]Close",
+    let language = if capability == crate::theme::Capability::Ascii {
+        pulse_core::config::Language::English
+    } else {
+        app.language
+    };
+    let t = |english, russian| crate::i18n::choose(language, english, russian);
+    let context: Option<Vec<&str>> = match &app.overlay {
+        Some(Overlay::Palette(state)) if state.help => Some(vec![
+            t(
+                "[HELP]  [type]Filter  [↑↓]Select  [Enter]Run  [? Esc]Close",
+                "[СПРАВКА]  [текст]Фильтр  [↑↓]Выбор  [Enter]Запуск  [? Esc]Закрыть",
+            ),
+            t(
+                "[HELP]  [type]Filter  [Enter]Run  [Esc]Close",
+                "[СПРАВКА]  [текст]Фильтр  [Enter]Запуск  [Esc]Закрыть",
+            ),
+            t("[HELP]  [Esc]Close", "[СПРАВКА]  [Esc]Закрыть"),
         ]),
-        Some(Overlay::Palette(_)) => Some(&[
-            "[COMMANDS]  [type]Filter  [↑↓]Select  [Enter]Run  [Esc]Close",
-            "[COMMANDS]  [type]Filter  [Enter]Run  [Esc]Close",
-            "[COMMANDS]  [Esc]Close",
+        Some(Overlay::Palette(_)) => Some(vec![
+            t(
+                "[COMMANDS]  [type]Filter  [↑↓]Select  [Enter]Run  [Esc]Close",
+                "[КОМАНДЫ]  [текст]Фильтр  [↑↓]Выбор  [Enter]Запуск  [Esc]Закрыть",
+            ),
+            t(
+                "[COMMANDS]  [type]Filter  [Enter]Run  [Esc]Close",
+                "[КОМАНДЫ]  [текст]Фильтр  [Enter]Запуск  [Esc]Закрыть",
+            ),
+            t("[COMMANDS]  [Esc]Close", "[КОМАНДЫ]  [Esc]Закрыть"),
         ]),
-        Some(Overlay::Search(_)) => Some(&[
-            "[SEARCH]  [type]Filter  [Enter]Apply  [Esc]Cancel",
-            "[SEARCH]  [Enter]Apply  [Esc]Cancel",
-            "[SEARCH]  [Esc]Cancel",
+        Some(Overlay::Search(_)) => Some(vec![
+            t(
+                "[SEARCH]  [type]Filter  [Enter]Apply  [Esc]Cancel",
+                "[ПОИСК]  [текст]Фильтр  [Enter]Применить  [Esc]Отмена",
+            ),
+            t(
+                "[SEARCH]  [Enter]Apply  [Esc]Cancel",
+                "[ПОИСК]  [Enter]Применить  [Esc]Отмена",
+            ),
+            t("[SEARCH]  [Esc]Cancel", "[ПОИСК]  [Esc]Отмена"),
         ]),
-        Some(Overlay::Pipe(_)) => Some(&[
-            "[PIPE]  [↑↓←→]Move  [Enter]Expand  [v]View  [Esc]Back  [?]Help",
-            "[PIPE]  [↑↓]Move  [Enter]Expand  [Esc]Back",
-            "[PIPE]  [Esc]Back",
+        Some(Overlay::Pipe(_)) => Some(vec![
+            t(
+                "[PIPE]  [↑↓←→]Move  [Enter]Expand  [v]View  [Esc]Back  [?]Help",
+                "[РАССЛЕДОВАНИЕ]  [↑↓←→]Ход  [Enter]Раскрыть  [v]Вид  [Esc]Назад",
+            ),
+            t(
+                "[PIPE]  [↑↓]Move  [Enter]Expand  [Esc]Back",
+                "[РАССЛЕДОВАНИЕ]  [↑↓]Ход  [Enter]Раскрыть  [Esc]Назад",
+            ),
+            t("[PIPE]  [Esc]Back", "[РАССЛЕДОВАНИЕ]  [Esc]Назад"),
         ]),
-        None if app.inspector.is_some() => Some(&[
-            "[INSPECTOR]  [↑↓]Select  [Enter]Follow  [Tab]Panel  [Esc]Back  [?]Help",
-            "[INSPECTOR]  [Enter]Follow  [Tab]Panel  [Esc]Back",
-            "[INSPECTOR]  [Esc]Back",
+        Some(Overlay::Settings(_)) if capability == crate::theme::Capability::Ascii => Some(vec![
+            "[SETTINGS]  [Up/Down]Select  [Left/Right]Change  [Esc]Close",
+            "[SETTINGS]  [Left/Right]Change  [Esc]Close",
+            "[SETTINGS]  [Esc]Close",
+        ]),
+        Some(Overlay::Settings(_)) => Some(vec![
+            t(
+                "[SETTINGS]  [↑↓]Select  [←→]Change  [Esc]Close",
+                "[НАСТРОЙКИ]  [↑↓]Выбор  [←→]Изменить  [Esc]Закрыть",
+            ),
+            t(
+                "[SETTINGS]  [←→]Change  [Esc]Close",
+                "[НАСТРОЙКИ]  [←→]Изменить  [Esc]Закрыть",
+            ),
+            t("[SETTINGS]  [Esc]Close", "[НАСТРОЙКИ]  [Esc]Закрыть"),
+        ]),
+        None if app.inspector.is_some() => Some(vec![
+            t(
+                "[INSPECTOR]  [↑↓]Select  [Enter]Follow  [Tab]Panel  [Esc]Back  [?]Help",
+                "[ИНСПЕКТОР]  [↑↓]Выбор  [Enter]Перейти  [Tab]Панель  [Esc]Назад",
+            ),
+            t(
+                "[INSPECTOR]  [Enter]Follow  [Tab]Panel  [Esc]Back",
+                "[ИНСПЕКТОР]  [Enter]Перейти  [Tab]Панель  [Esc]Назад",
+            ),
+            t("[INSPECTOR]  [Esc]Back", "[ИНСПЕКТОР]  [Esc]Назад"),
         ]),
         None => None,
     };
     let Some(candidates) = context else {
-        return ui::footer_line(plan.footer, width, capability, app.icons);
+        return ui::footer_line(plan.footer, width, capability, app.icons, language);
     };
     candidates
         .iter()
         .find(|candidate| ui::width_of(candidate) <= usize::from(width))
         .copied()
-        .unwrap_or("[Esc]Back")
+        .unwrap_or_else(|| t("[Esc]Back", "[Esc]Назад"))
         .to_string()
 }
 
@@ -422,13 +510,23 @@ fn footer_hints(
 ///
 /// Инспектор — контекст поверх экрана, из которого его открыли, поэтому
 /// подсвечен экран происхождения: `Esc` вернёт именно туда.
-fn active_marker(app: &App) -> &'static str {
+fn active_marker(app: &App, capability: crate::theme::Capability) -> &'static str {
+    let language = if capability == crate::theme::Capability::Ascii {
+        pulse_core::config::Language::English
+    } else {
+        app.language
+    };
     match &app.overlay {
-        Some(Overlay::Palette(state)) if state.help => "[HELP]",
-        Some(Overlay::Palette(_)) => "[COMMANDS]",
-        Some(Overlay::Search(_)) => "[SEARCH]",
-        Some(Overlay::Pipe(_)) => "[PIPE]",
-        None if app.inspector.is_some() => "[INSPECTOR]",
+        Some(Overlay::Palette(state)) if state.help => {
+            crate::i18n::choose(language, "[HELP]", "[СПРАВКА]")
+        }
+        Some(Overlay::Palette(_)) => crate::i18n::choose(language, "[COMMANDS]", "[КОМАНДЫ]"),
+        Some(Overlay::Search(_)) => crate::i18n::choose(language, "[SEARCH]", "[ПОИСК]"),
+        Some(Overlay::Pipe(_)) => crate::i18n::choose(language, "[PIPE]", "[РАССЛЕДОВАНИЕ]"),
+        Some(Overlay::Settings(_)) => crate::i18n::choose(language, "[SETTINGS]", "[НАСТРОЙКИ]"),
+        None if app.inspector.is_some() => {
+            crate::i18n::choose(language, "[INSPECTOR]", "[ИНСПЕКТОР]")
+        }
         None => match app.screen {
             Screen::Overview => "[1]",
             Screen::Problems => "[2]",
@@ -500,7 +598,8 @@ pub(crate) fn section<'a>(
     plan: &LayoutPlan,
     theme: &'a Theme,
 ) -> Line<'a> {
-    let text = ui::section_title(title, width, plan.section_rules, theme.capability);
+    let title = crate::i18n::translate(theme.language, title);
+    let text = ui::section_title(&title, width, plan.section_rules, theme.capability);
     Line::from(Span::styled(text, theme.dim()))
 }
 
@@ -521,8 +620,9 @@ pub(crate) fn focused_section<'a>(
         (true, false) => "▌ ",
         (false, _) => "  ",
     };
+    let title = crate::i18n::translate(theme.language, title);
     let content_width = width.saturating_sub(2);
-    let text = ui::section_title(title, content_width, plan.section_rules, theme.capability);
+    let text = ui::section_title(&title, content_width, plan.section_rules, theme.capability);
     Line::from(vec![
         Span::styled(accent, if focused { theme.accent() } else { theme.dim() }),
         Span::styled(text, if focused { theme.accent() } else { theme.dim() }),
@@ -556,13 +656,22 @@ pub(crate) fn vitals_line<'a>(snapshot: &Snapshot, theme: &'a Theme) -> Line<'a>
         Span::styled("CPU ", theme.dim()),
         Span::styled(format::percent(cpu), theme.ratio(cpu)),
         Span::raw("    "),
-        Span::styled("MEM ", theme.dim()),
+        Span::styled(
+            format!("{} ", crate::i18n::translate(theme.language, "MEM")),
+            theme.dim(),
+        ),
         Span::styled(format::percent(memory), theme.ratio(memory)),
         Span::raw("    "),
-        Span::styled("PSI MEM ", theme.dim()),
+        Span::styled(
+            format!("PSI {} ", crate::i18n::translate(theme.language, "MEM")),
+            theme.dim(),
+        ),
         Span::styled(format::percent(psi_mem), theme.ratio(psi_mem * 8.0)),
         Span::raw("    "),
-        Span::styled("IO WAIT ", theme.dim()),
+        Span::styled(
+            crate::i18n::choose(theme.language, "IO WAIT ", "ОЖИДАНИЕ IO "),
+            theme.dim(),
+        ),
         Span::styled(format::percent(io_wait), theme.ratio(io_wait * 4.0)),
         Span::raw("    "),
         Span::styled("NET ", theme.dim()),
@@ -579,7 +688,10 @@ pub(crate) fn vitals_line<'a>(snapshot: &Snapshot, theme: &'a Theme) -> Line<'a>
         // повторяет одно и то же число дважды.
         if let Some(worst) = fs_worst.filter(|worst| *worst > root + 0.01) {
             spans.push(Span::raw("  "));
-            spans.push(Span::styled("worst fs ", theme.dim()));
+            spans.push(Span::styled(
+                crate::i18n::choose(theme.language, "worst fs ", "худшая ФС "),
+                theme.dim(),
+            ));
             spans.push(Span::styled(format::fs_percent(worst), theme.ratio(worst)));
         }
     }
@@ -622,12 +734,8 @@ pub(crate) fn render_logical_table(
         .zip(plan.widths.iter())
         .filter_map(|(index, width)| {
             let column = columns.get(*index)?;
-            Some(table::cell(
-                plan.title(column),
-                *width,
-                column.align,
-                theme.capability,
-            ))
+            let title = crate::i18n::translate(theme.language, plan.title(column));
+            Some(table::cell(&title, *width, column.align, theme.capability))
         })
         .collect::<Vec<_>>()
         .join("  ");

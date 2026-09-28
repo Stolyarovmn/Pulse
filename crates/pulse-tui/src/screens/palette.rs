@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{App, PaletteState};
-use crate::palette::{listed, Command, Scope};
+use crate::palette::{listed_localized, Command, Scope};
 use crate::state::StateClass;
 use crate::theme::{Capability, Theme};
 use crate::ui;
@@ -55,7 +55,7 @@ pub(crate) fn render(
     theme: &Theme,
 ) {
     let ascii = matches!(theme.capability, Capability::Ascii);
-    let commands = listed(app.place(), state.help, &state.query);
+    let commands = listed_localized(app.place(), state.help, &state.query, app.language);
     let selected = state.selected.min(commands.len().saturating_sub(1));
 
     let mut rows: Vec<Row> = Vec::new();
@@ -101,10 +101,19 @@ pub(crate) fn render(
         crate::palette::Place::Inspector => "INSPECTOR",
         crate::palette::Place::Screen(screen) => Scope::Screen(screen).label(),
     };
+    let place = crate::i18n::translate(theme.language, place);
     let title = if state.help {
-        format!(" HELP · every command · here: {place} ")
+        format!(
+            " {} · {} · {}: {place} ",
+            crate::i18n::translate(theme.language, "HELP"),
+            crate::i18n::choose(theme.language, "every command", "все команды"),
+            crate::i18n::choose(theme.language, "here", "здесь")
+        )
     } else {
-        format!(" COMMANDS · {place} ")
+        format!(
+            " {} · {place} ",
+            crate::i18n::translate(theme.language, "COMMANDS")
+        )
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -130,7 +139,11 @@ pub(crate) fn render(
             Span::styled(
                 format!(
                     "{:>width$}",
-                    format!("{} of {}", commands.len(), total(app, state)),
+                    if theme.language == pulse_core::config::Language::Russian {
+                        format!("{} из {}", commands.len(), total(app, state))
+                    } else {
+                        format!("{} of {}", commands.len(), total(app, state))
+                    },
                     width = inner_width
                         .saturating_sub(ui::width_of(&state.query) + 3)
                         .max(1)
@@ -150,7 +163,15 @@ pub(crate) fn render(
     let start = cursor.saturating_sub(room.saturating_sub(1));
     if commands.is_empty() {
         lines.push(Line::from(Span::styled(
-            format!("  no command matches \"{}\"", state.query),
+            format!(
+                "  {} \"{}\"",
+                crate::i18n::choose(
+                    theme.language,
+                    "no command matches",
+                    "нет подходящей команды"
+                ),
+                state.query
+            ),
             theme.dim(),
         )));
     }
@@ -158,7 +179,7 @@ pub(crate) fn render(
         match row {
             Row::Group(label) => {
                 lines.push(Line::from(Span::styled(
-                    format!("  {label}"),
+                    format!("  {}", crate::i18n::translate(theme.language, label)),
                     theme.faint(),
                 )));
             }
@@ -178,7 +199,13 @@ pub(crate) fn render(
 
     if state.help {
         lines.push(rule());
-        lines.push(Line::from(Span::styled("  STATE ALPHABET", theme.faint())));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  {}",
+                crate::i18n::choose(theme.language, "STATE ALPHABET", "АЛФАВИТ СОСТОЯНИЙ")
+            ),
+            theme.faint(),
+        )));
         let half = ALPHABET.len().div_ceil(2);
         for index in 0..half {
             let mut spans = vec![Span::raw("  ")];
@@ -190,7 +217,13 @@ pub(crate) fn render(
                     format!("{}  ", class.symbol(theme.capability)),
                     class.style(theme),
                 ));
-                spans.push(Span::styled(format!("{:<34}", class.label()), theme.text()));
+                spans.push(Span::styled(
+                    format!(
+                        "{:<34}",
+                        crate::i18n::translate(theme.language, class.label())
+                    ),
+                    theme.text(),
+                ));
             }
             lines.push(Line::from(spans));
         }
@@ -198,13 +231,24 @@ pub(crate) fn render(
 
     lines.push(rule());
     let arrows = if ascii { "Up/Down" } else { "↑↓" };
-    let close = if state.help {
-        "? / Esc close"
-    } else {
-        "Esc close"
-    };
     lines.push(Line::from(Span::styled(
-        format!("  {arrows} select   Enter run   {close}   type to filter"),
+        if state.help {
+            format!(
+                "  {arrows} {}   Enter {}   ? / Esc {}   {}",
+                crate::i18n::choose(theme.language, "select", "выбор"),
+                crate::i18n::choose(theme.language, "run", "запуск"),
+                crate::i18n::choose(theme.language, "close", "закрыть"),
+                crate::i18n::choose(theme.language, "type to filter", "введите фильтр")
+            )
+        } else {
+            format!(
+                "  {arrows} {}   Enter {}   Esc {}   {}",
+                crate::i18n::choose(theme.language, "select", "выбор"),
+                crate::i18n::choose(theme.language, "run", "запуск"),
+                crate::i18n::choose(theme.language, "close", "закрыть"),
+                crate::i18n::choose(theme.language, "type to filter", "введите фильтр")
+            )
+        },
         theme.dim(),
     )));
     frame.render_widget(Paragraph::new(lines), inner);
@@ -212,7 +256,7 @@ pub(crate) fn render(
 
 /// Сколько команд в этом режиме без фильтра.
 fn total(app: &App, state: &PaletteState) -> usize {
-    listed(app.place(), state.help, "").len()
+    listed_localized(app.place(), state.help, "", app.language).len()
 }
 
 /// Строка команды: подпись, клавиша цветом места, подсказка приглушённо.
@@ -227,7 +271,11 @@ fn command_line(command: &Command, selected: bool, width: u16, theme: &Theme) ->
         Span::styled(
             format!(
                 "{:<TITLE$}",
-                ui::truncate(&text(command.title), TITLE, theme.capability)
+                ui::truncate(
+                    &text(&crate::i18n::translate(theme.language, command.title)),
+                    TITLE,
+                    theme.capability,
+                )
             ),
             theme.text(),
         ),
@@ -239,7 +287,11 @@ fn command_line(command: &Command, selected: bool, width: u16, theme: &Theme) ->
             theme.accent(),
         ),
         Span::styled(
-            ui::truncate(&text(command.hint), hint_width, theme.capability),
+            ui::truncate(
+                &text(&crate::i18n::translate(theme.language, command.hint)),
+                hint_width,
+                theme.capability,
+            ),
             theme.dim(),
         ),
     ];
